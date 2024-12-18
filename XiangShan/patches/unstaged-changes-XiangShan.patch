@@ -1,0 +1,1160 @@
+diff --git a/rocket-chip b/rocket-chip
+--- a/rocket-chip
++++ b/rocket-chip
+@@ -1 +1 @@
+-Subproject commit 254ebf7150e1d633fee123281f723d9936d30075
++Subproject commit 254ebf7150e1d633fee123281f723d9936d30075-dirty
+diff --git a/src/main/scala/xiangshan/backend/exu/Exu.scala b/src/main/scala/xiangshan/backend/exu/Exu.scala
+index e4e5aeb24..013a09f36 100644
+--- a/src/main/scala/xiangshan/backend/exu/Exu.scala
++++ b/src/main/scala/xiangshan/backend/exu/Exu.scala
+@@ -160,8 +160,24 @@ abstract class Exu(cfg: ExuConfig)(implicit p: Parameters) extends XSModule {
+      buffer.io.in.bits.valid     := 0.U 
+      buffer.io.in.bits.rd        := 0.U
+      buffer.io.in.bits.rs1       := 0.U
+-     buffer.io.in.bits.rs2       := 0.U  
++     buffer.io.in.bits.rs2       := 0.U 
++     buffer.io.in.bits.trans_id  := 0.U 
++  
+       
++    //control
++     buffer.io.in.bits.flush_i                 := 0.U
++     buffer.io.in.bits.pc_i                    := 0.U
++     buffer.io.in.bits.capstone_valid_i        := 0.U
++     buffer.io.in.bits.cih_i                   := 0.U 
++    //  buffer.io.in.bits.node_query_ready_i      := 0.U
++    //  buffer.io.in.bits.node_query_resp_valid_i := 0.U
++    //  buffer.io.in.bits.node_query_resp_i.synchronous   := 0.U 
++    //  buffer.io.in.bits.node_query_resp_i.trans_id      := 0.U 
++    //  buffer.io.in.bits.node_query_resp_i.r_valid       := 0.U 
++    //  buffer.io.in.bits.node_alloc_ready_i      := 0.U
++    //  buffer.io.in.bits.node_alloc_resp_valid_i := 0.U
++    //  buffer.io.in.bits.node_alloc_node_id_i    := 0.U 
++
+       buffer.io.redirect <> io.redirect
+       buffer.io.in.valid := in.valid && sel
+       buffer.io.in.bits.uop := in.bits.uop
+@@ -185,6 +201,21 @@ abstract class Exu(cfg: ExuConfig)(implicit p: Parameters) extends XSModule {
+      fu.io.in.bits.rd        := 0.U
+      fu.io.in.bits.rs1       := 0.U
+      fu.io.in.bits.rs2       := 0.U 
++     fu.io.in.bits.trans_id  := 0.U 
++
++         //control
++     fu.io.in.bits.flush_i                         := 0.U
++     fu.io.in.bits.pc_i                            := 0.U
++     fu.io.in.bits.capstone_valid_i                := 0.U
++     fu.io.in.bits.cih_i                           := 0.U 
++    //  fu.io.in.bits.node_query_ready_i              := 0.U
++    //  fu.io.in.bits.node_query_resp_valid_i         := 0.U
++    //  fu.io.in.bits.node_query_resp_i.synchronous   := 0.U 
++    //  fu.io.in.bits.node_query_resp_i.trans_id      := 0.U 
++    //  fu.io.in.bits.node_query_resp_i.r_valid       := 0.U 
++    //  fu.io.in.bits.node_alloc_ready_i              := 0.U
++    //  fu.io.in.bits.node_alloc_resp_valid_i         := 0.U
++    //  fu.io.in.bits.node_alloc_node_id_i            := 0.U
+ 
+       fu.io.in.valid := in.valid && sel
+       fu.io.in.bits.uop := in.bits.uop
+diff --git a/src/main/scala/xiangshan/backend/fu/Alu.scala b/src/main/scala/xiangshan/backend/fu/Alu.scala
+index 0b22bc63f..b8e215996 100644
+--- a/src/main/scala/xiangshan/backend/fu/Alu.scala
++++ b/src/main/scala/xiangshan/backend/fu/Alu.scala
+@@ -97,11 +97,12 @@ import circt.stage.ChiselStage
+     val trans_id  = UInt (TRANS_ID_BITS.W) 
+ 
+    }
+- class  cap_result_t extends Bundle{
++ class  cap_result_t extends Bundle
++ {
+     val cap   = UInt (128.W)//clen_t
+     val tag   = UInt (1.W)
+     val valid = UInt (1.W)
+-   }
++ }
+ 
+   // a domain switch request
+   class  dom_switch_req_t extends Bundle{
+@@ -409,10 +410,12 @@ class  cap_bounds_uncompres extends Module {
+     // tt := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), T2(13,0)) << E
+     
+     val bb1 = cap_cc_bounds.cursor >> (E + 14.U(6.W))//?
+-    val tt1 = cap_cc_bounds.cursor >> (E + 14.U(6.W))//? more  than 64
++    val tt1 = cap_cc_bounds.cursor >> (E + 14.U(6.W))//?If it as more  than 64
++  printf("cap_fat_bounds1.top uncompress :%b ,%b, %b ,%b \n",cap_cc_bounds.cursor,bb1, tt1,E)
+ 
+     val bb2 = Cat(bb1(XLEN-15,0), B1(13,0)) << E
+     val tt2 = Cat(tt1(XLEN-15,0), T2(13,0)) << E
++  printf("cap_fat_bounds2.top uncompress :%b ,%b, %b  \n",cap_cc_bounds.cursor,bb2, tt2)
+ 
+ 
+   // correction
+@@ -421,6 +424,7 @@ class  cap_bounds_uncompres extends Module {
+    T3 := T2(13,11)//Cat(T(13,11)) 
+    B3 := B1(13,11)  
+    R  := B3 - 1.U(3.W)       
++  printf("cap_fat_bounds3.top uncompress :%b ,%b, %b ,%b,%b \n",k3,A3, T3, B3,R)
+ 
+   val tt4 = Mux((A3 >= R) && (T3 < R), tt2 + (1.U(64.W) << (E + 14.U(6.W))), (Mux(((A3 < R) && (T3 >= R)), tt2 - (1.U(64.W) << (E + 14.U(6.W))),tt2 ))) //?        
+   val bb4 = Mux((A3 >= R) && (B3 < R), bb2 + (1.U(64.W) << (E + 14.U(6.W))), (Mux(((A3 < R) && (B3 >= R)), bb2 - (1.U(64.W) << (E + 14.U(6.W))),bb2 ))) //?   
+@@ -428,12 +432,31 @@ class  cap_bounds_uncompres extends Module {
+ 
+   cap_fat_bounds.cursor:= cap_cc_bounds.cursor
+   cap_fat_bounds.base  := bb4
+-  cap_fat_bounds.top   := tt4   
++  cap_fat_bounds.top   := tt4 
++  printf("cap_fat_bounds4.top uncompress :%b ,%b, %b  \n",cap_cc_bounds.cursor,bb4, tt4)
++
+ }
+ 
++class shift_find_one extends Module 
++{
++  val dec           = IO(Input  (UInt(6.W)))
++  val len           = IO(Input  (UInt(64.W)))
++  val leading_zeros = IO(Input  (UInt(6.W))) 
++  val test4         = IO(Output (UInt(1.W)))
++
++  //to find first msb '1'
++  val out   = leading_zeros - dec
++  val test1 = (out > 12.U(6.W)) 
++  val test2 = (len >> out)
++  val test3 = Mux(test2(0),false.B,true.B)
++  test4     := test1 && test3
++  printf("shift_find_one :%b ,%b, %b , %b ,%b,%b, %b,%b \n",out,test2,len, dec,leading_zeros,test4,test1, test3)
++
++}
+ 
+ // converts a fat bounds into a compressed bounds
+-class cap_bounds_compress extends Module {
++class cap_bounds_compress extends Module 
++{
+ 
+   val cap_cc_bounds  =IO(Output(new cap_cc_bounds_t))
+   val cap_fat_bounds =IO(Input(new cap_fat_bounds_t))
+@@ -454,14 +477,14 @@ class cap_bounds_compress extends Module {
+   leading_zeros := 63.U
+ 
+   E:= 0.U
+-  //  val test1=(leading_zeros > 12.U(6.W)) && ((len >> leading_zeros) & 1.U(XLEN.W))
+-  test1:=(leading_zeros > 12.U(6.W)) 
+-  test2:=(len >> leading_zeros)
+-  test3:=Mux(test2(0),false.B,true.B)
+-  test4:= test1 && test3
+-   
+-  printf("after for : %b, %b \n", cap_fat_bounds.top, cap_fat_bounds.base )
+ 
++
++  // //  val test1=(leading_zeros > 12.U(6.W)) && ((len >> leading_zeros) & 1.U(XLEN.W))
++  // test1:=(leading_zeros > 12.U(6.W)) 
++  // test2:=(len >> leading_zeros)
++  // test3:=Mux(test2(0),false.B,true.B)
++  // test4:= test1 && test3
++   
+   // // while(((leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))) === 0.U(XLEN.W)) 
+   // when(test4)
+   // {//to find first msb '1'
+@@ -472,42 +495,103 @@ class cap_bounds_compress extends Module {
+   //   test4:= test1 && test3
+   // }
+   // printf("after for1: %b, %b , %b \n", leading_zeros, test4 , len )
+-
+- 
+- 
+-  var flag = 0
+-  var leading_zeross = 63
+-  var lenn =196//cap_fat_bounds.top - cap_fat_bounds.base//196//5439//196//len.litValue
+-  var k = lenn
+-  for (i <- 0 until 52)//63-11
++ //  val flag      = RegInit(0.U)
++ //  val flag      = RegInit(0.U(64.W))
++ //  val flag      = Vec(64, UInt(1.W))
++ val flag      = RegInit(VecInit(Seq.fill(64)(0.U(1.W))))//Vec(64,UInt(1.W))
++ val index     = RegInit(0.U)
++ val leading_zero_f = RegInit(63.U)
++ val leading_zero_m = RegInit(VecInit(Seq.fill(64)(0.U(63.W))))//RegInit(63.U)
++ val exe_units = for (i <- 0 until 52) yield
+   {
+-    if (lenn<4096)
++   Module(new shift_find_one)
++  }
++    // flag:=0.U
++    leading_zero_f:=0.U
++    // when((len<4096.U)===1.U)//2 power 12
++    when(len<4096.U)//2 power 12
+     {
+-      leading_zeross=12
+-      flag=1
++     flag(0):=1.U
++     leading_zero_f:= 12.U
++     printf("after when1: %b,%b ,%b , %b ,%b,  \n",cap_fat_bounds.top,len ,flag(0),  E ,len(12))
+     }
+-    else if (flag==0)
+-    {
+-     if ((leading_zeross > 12) && ((lenn>> leading_zeross) == 0))
+-      {
+-       leading_zeross = leading_zeross - 1
+-       k = lenn>> leading_zeross
+-       printf("after for3: %b ,%b , %b , %b \n", leading_zeross.U, flag.U,i.U, k.U)
++   printf("origin bound: %b, %b , %b , %b\n", cap_fat_bounds.top, cap_fat_bounds.base,flag(0),flag(1) )
+ 
+-      }
+-      else 
+-      {
+-       flag=1
+-      }
++   for (i <- 0 until 52) //63-11
++   {
++    // flag(i+1):=0.U
++
++    exe_units(i).dec           := i.U
++    exe_units(i).len           := len
++    exe_units(i).leading_zeros :=leading_zeros-i.U  
++    leading_zero_m(i):= leading_zeros-i.U 
++    // printf("after for1:%b, %b ,%b, %b , %b ,%b,%b,  \n",i.U, leading_zeros,leading_zero_m, flag, len, E ,len(12),leading_zero_f)
++    printf("after for1:%b, %b ,%b, %b , %b ,%b,%b, %b ,%b,%b\n",i.U, leading_zeros,leading_zeros - i.U, flag(i), len, E ,len(12),leading_zero_f,leading_zero_m(i),exe_units(i).test4)
++    // leading_zero_f:=Mux(len<4096.U, 12.U,(((exe_units(i).test4===1.U)||((leading_zeros - i.U)===12.U))&&(flag===0.U),leading_zero_m,leading_zero_f))
++    // flag:=Mux(len<4096.U, 1.U,(((exe_units(i).test4===1.U)||((leading_zeros - i.U)===12.U)),1.U,0.U))
++    // when(((exe_units(i).test4===1.U)||(leading_zero_m===12.U))&&(flag(i)===0.U))
++    // when(((exe_units(i).test4===1.U)||((leading_zeros-i.U)===12.U))&&(flag(i)===0.U))
++    when((exe_units(i).test4===0.U)&&(flag(i)===0.U))
++    {
++     flag(i+1):=1.U
++     leading_zero_f:=leading_zeros-i.U//leading_zero_m
++     printf("after when2: %b ,%b, %b , %b ,%b,%b,  \n", leading_zeros,leading_zero_f, flag(i+1), len, E ,len(12))
++    
+     }
+-  }
++    when(flag(i)===1.U)
++    {
++      printf("flag1 is: %b  \n",flag(i+1))
+ 
+-  printf("after for2: %b ,%b , %b ,%b,%b,  \n", leading_zeross.U, flag.U, len, E,len(12))
++     flag(i+1):=1.U
++    }
++    // .otherwise{
++    //  flag(i+1):=0.U
++    //  printf("flag2 is: %b  \n",flag(i+1))
++
++    // }
++    // when(((len<4096.U)===1.U)&&(flag===0.U))//2 power 12
++    // {//it is better to move outside
++    //  flag:=1.U
++    //  leading_zero_f:= 12.U
++    //  printf("after when2: %b,%b ,%b , %b ,%b,%b,  \n", i.U,leading_zeros, flag, len, E ,len(12))
++    // }
++   }
++  
++ 
++ 
++  // var flag = 0
++  // var leading_zeross = 63
++  // var lenn =196//cap_fat_bounds.top - cap_fat_bounds.base//196//5439//196//len.litValue
++  // var k = lenn
++  // for (i <- 0 until 52)//63-11
++  // {
++  //   if (lenn<4096)
++  //   {
++  //     leading_zeross=12
++  //     flag=1
++  //   }
++  //   else if (flag==0)
++  //   {
++  //    if ((leading_zeross > 12) && ((lenn>> leading_zeross) == 0))
++  //     {
++  //      leading_zeross = leading_zeross - 1
++  //      k = lenn>> leading_zeross
++  //      printf("after for3: %b ,%b , %b , %b \n", leading_zeross.U, flag.U,i.U, k.U)
++
++  //     }
++  //     else 
++  //     {
++  //      flag=1
++  //     }
++  //   }
++  // }
+ 
++  // printf("after for2: %b ,%b , %b ,%b,%b,  \n", leading_zeross.U, flag.U, len, E,len(12))
++  printf("after for2: %b ,%b , %b ,%b,  \n", leading_zero_f, len, E ,len(12))
+ 
+ 
+-  // E := leading_zeros - 12.U(6.W)
+-  E := leading_zeross.U - 12.U(6.W)
++  E := leading_zero_f - 12.U(6.W)
++  // E := leading_zeross.U - 12.U(6.W)
+ 
+   when((E ===0.U(6.W))&&(len(12) === 0.U(1.W))) 
+    {
+@@ -516,7 +600,7 @@ class cap_bounds_compress extends Module {
+     B1 := cap_fat_bounds.base(13,0)
+     T1 := cap_fat_bounds.top(11,0)
+     
+-    // printf("cap_bounds_compress len 12 zero1" )
++    printf("cap_bounds_compress len 12 zero1" )
+    }     
+   .otherwise
+   // else
+@@ -528,11 +612,20 @@ class cap_bounds_compress extends Module {
+     val k2 = (cap_fat_bounds.top >> E)
+     B1:=Cat(k1(13,3),E(2,0))
+     
++    printf("cap_fat_bounds.top %b , %b,%b,%b", cap_fat_bounds.top, k1, k2, E)
++
+     if(((cap_fat_bounds.top >> (E + 3.U)) << (E + 3.U)) != cap_fat_bounds.top)
++    {
+       T1:=Cat(k2(11,3)+1.U,E(5,3))     
+-    else 
++      printf("cap_fat_bounds.top yes %b ", T1)
++
++    }    
++     else 
++     {
+       T1:=Cat(k2(11,3),E(5,3))
++      printf("cap_fat_bounds.top no %b ", T1)
+ 
++     }
+     // TODO: more corrections
+   }
+ 
+@@ -542,6 +635,9 @@ class cap_bounds_compress extends Module {
+   cap_cc_bounds.b  := B1(13,3)
+   cap_cc_bounds.tE := T1(2,0)
+   cap_cc_bounds.t  := T1(11,3)
++   printf("cap_fat_bounds.top final %b,%b, %b ,%b ", cap_cc_bounds.bE, cap_cc_bounds.b, cap_cc_bounds.tE,cap_cc_bounds.t)
++
++
+ }
+ 
+ // converts a compressed cap into a fat cap
+@@ -551,7 +647,6 @@ class cap_uncompress extends Module {
+  val cap_cc  =IO(Input(new cap_cc_t))
+  
+  val  cap_uncompress_cap = Module( new cap_bounds_uncompres)
+- //  if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+  when ((cap_cc.meta.ty === cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty === cap_type_t.CAP_TYPE_SEALEDRET)) 
+  { 
+   cap_uncompress_cap.cap_cc_bounds.iE := 0.U  
+@@ -571,7 +666,6 @@ class cap_uncompress extends Module {
+   cap_fat.meta.perm:= cap_cc.meta.perm
+   cap_fat.renode_id:= cap_cc.renode_id
+  }
+- //  else
+  .otherwise
+  {
+ 
+@@ -1117,7 +1211,7 @@ class cdelinModule extends Module {
+   val src     = IO(Input(new fu_data_t))
+   val cdelin  = IO(Output(new cap_result_t ))   
+   val cdelin2 = IO(Output(new cap_result_t ))   
+-  val  ex_o_v= IO(Output (UInt(1.W) ))
++  val  ex_o_v = IO(Output (UInt(1.W) ))
+ 
+    ex_o_v:=0.U
+ 
+@@ -3245,7 +3339,7 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+ }
+ 
+ //capstone//mlabaf
+- class AluCapResSel(implicit p: Parameters) extends XSModule {
++class AluCapResSel(implicit p: Parameters) extends XSModule {
+   val io = IO(new Bundle() {
+   //  val func = Input(UInt(3.W))
+     // val func = Input(UInt(4.W))
+@@ -3938,7 +4032,6 @@ class CapExeModule(implicit p: Parameters) extends XSModule {
+ }
+ 
+ 
+- //class AluDataModule ( typ: cap_result_t)(implicit p: Parameters) extends XSModule {
+ class AluDataModule (implicit p: Parameters) extends XSModule {
+    val io = IO(new Bundle() {
+     val src = Vec(2, Input(UInt(XLEN.W)))
+@@ -4146,6 +4239,7 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+   dataModule.io.func := io.in.bits.uop.ctrl.fuOpType
+   dataModule.io.pred_taken := uop.cf.pred_taken
+   dataModule.io.isBranch   := isBranch
++  printf("dataModule.io.src: %b,%b\n", dataModule.io.src(0), dataModule.io.src(1))
+ 
+ 
+   val CapEModule = Module(new CapExeModule)
+@@ -4191,7 +4285,7 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+   val mock_node_unit_ins = Module(new mock_node_unit)
+ 
+   mock_node_unit_ins.io.flush_i := io.in.bits.flush_i
+- //temporarily
++ //temporarily//from load and store unit
+    mock_node_unit_ins.io.query_valid_i(0) := 0.U
+    mock_node_unit_ins.io.query_i(0).synchronous    := 0.U
+    mock_node_unit_ins.io.query_i(0).trans_id       := 0.U
+@@ -4410,7 +4504,7 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+     val rs2_c  = Reg(new cap_fat_t) 
+     rs1_c.bounds.cursor:=100230256.U//100231256.U//807661056.U//"h00df000000121400".U//1400.U//
+     rs1_c.bounds.base  :=100230132.U//100230132.U//807660032.U//"h00df000000121000".U//1000.U//
+-    rs1_c.bounds.top   :=100230328.U//100234228.U//807664128.U//"h00df000000122000".U//2000.U//
++    rs1_c.bounds.top   :=100230328.U//100246328.U//100234228.U//807664128.U//"h00df000000122000".U//2000.U//
+             
+     rs1_c.reg_id:= 3.U
+     rs1_c.async:= 1.U
+diff --git a/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala b/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
+index 8d9ca3203..5b85e88a9 100644
+--- a/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
++++ b/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
+@@ -69,7 +69,21 @@ class FuOutput(val len: Int)(implicit p: Parameters) extends XSBundle {
+   val tag   = UInt (1.W)// for capstone result//mlabaf
+   val valid = UInt (1.W)// for capstone result//mlabaf
+   // val CapSrc  = new cap_result_t //mlabaf//capstone
+-}
++  //conrtol
++  val ex_o               =  new exception_t 
++  val cms_result_o       =  new capstone_mode_switch_t 
++  val capstone_valid_o    = UInt (1.W)     
++  val capstone_ready_o    = UInt (1.W)                   
++  val capstone_trans_id_o = UInt (TRANS_ID_BITS.W) 
++  val dom_switch_valid_o  =  UInt (1.W)                   
++  val dom_switch_req_o     =  new dom_switch_req_t  
++  val node_mut_valid_o    =  UInt (1.W)  
++  val node_mut_o          =  new node_mut_t 
++
++  // val node_query_valid_o  =  UInt (1.W)  
++  // val node_query_o        =  new node_query_t 
++  // val node_alloc_valid_o  =  UInt (1.W)  
++  }
+ 
+ class FunctionUnitInput(val len: Int)(implicit p: Parameters) extends XSBundle {
+   val src = Vec(3, UInt(len.W))
+@@ -88,6 +102,18 @@ class FunctionUnitInput(val len: Int)(implicit p: Parameters) extends XSBundle {
+   val rd        = UInt (5.W)
+   val rs1       = UInt (5.W)
+   val rs2       = UInt (5.W)
++  val trans_id  = UInt (TRANS_ID_BITS.W)
++  //control
++  val flush_i                 = ( UInt (1.W))
++  val pc_i                    = ( UInt (VLEN.W))  
++  val capstone_valid_i        = ( UInt (1.W))    
++  val cih_i                   = ( UInt (128.W))          
++  // val node_query_ready_i      = ( UInt (1.W))         
++  // val node_query_resp_valid_i = ( UInt (1.W)) 
++  // val node_query_resp_i       = ( new node_query_resp_t) 
++  // val node_alloc_ready_i      = ( UInt (1.W))  
++  // val node_alloc_resp_valid_i = ( UInt (1.W))  
++  // val node_alloc_node_id_i    = (UInt(31.W))  
+ }
+ 
+ class FunctionUnitIO(val len: Int)(implicit p: Parameters) extends XSBundle {
+diff --git a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+index d76a970ac..c4267abdc 100644
+--- a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
++++ b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+@@ -205,6 +205,22 @@ class FMA(implicit p: Parameters) extends FPUSubModule {
+   add_pipe.io.in.bits.rd        := 0.U
+   add_pipe.io.in.bits.rs1       := 0.U
+   add_pipe.io.in.bits.rs2       := 0.U
++  add_pipe.io.in.bits.trans_id  := 0.U 
++
++  //control
++
++  add_pipe.io.in.bits.flush_i                 := 0.U
++  add_pipe.io.in.bits.pc_i                    := 0.U
++  add_pipe.io.in.bits.capstone_valid_i        := 0.U
++  add_pipe.io.in.bits.cih_i                   := 0.U
++  // add_pipe.io.in.bits.node_query_ready_i      := 0.U
++  // add_pipe.io.in.bits.node_query_resp_valid_i := 0.U
++  // add_pipe.io.in.bits.node_query_resp_i.synchronous   := 0.U
++  // add_pipe.io.in.bits.node_query_resp_i.trans_id      := 0.U
++  // add_pipe.io.in.bits.node_query_resp_i.r_valid       := 0.U
++  // add_pipe.io.in.bits.node_alloc_ready_i      := 0.U
++  // add_pipe.io.in.bits.node_alloc_resp_valid_i := 0.U
++  // add_pipe.io.in.bits.node_alloc_node_id_i    := 0.U
+ 
+   mul_pipe.io.redirectIn := io.redirectIn
+   mul_pipe.rm := rm
+diff --git a/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala b/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
+index 1985fecc7..6f50ae03e 100644
+--- a/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
++++ b/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
+@@ -1,3 +1,4 @@
++
+ package xiangshan.backend.fu
+ 
+ import chipsalliance.rocketchip.config.Parameters
+@@ -9,13 +10,13 @@ import xiangshan._
+ import chisel3.experimental.hierarchy.{Definition, Instance, instantiable, public}
+ import circt.stage.ChiselStage
+ 
+-// Capstone node unit (mock)
++// Capstone node unit (mock) with internal array instead of external node unit
+ // Requests are generated in the execution stage and queued in
+ // the node unit until they are resolved later.
+ // Scoreboard needs to record the resolution state.
+ // Commit stage stalls until all node queries have been resolved.
+ // For write-type operations, just send to node unit and forget about it.
+-
++// mlabaf
+ 
+ // data structure
+ 
+@@ -31,7 +32,7 @@ class revnode_t extends Bundle{
+ 
+ // def revnode_id_is_null ( ) = { &revnode_id }
+ class revnode_id_is_null  extends Module 
+-   {  
++   {  //check if there is any one bit
+     val io = IO(new Bundle{
+      val revnode_id = Input (cap_revnode_id_t)
+      val out = Output(UInt(1.W)) 
+@@ -46,7 +47,7 @@ class revnode_id_is_null  extends Module
+        io.out:=1.U
+     }
+    }
+-class alloc_new  extends Module 
++class alloc_new  extends Module //mlabaf//bug in origin code with multiple return
+    { 
+     val io = IO(new Bundle{
+     val allocated_n_q  = Input(UInt(32.W))
+@@ -63,6 +64,8 @@ class alloc_new  extends Module
+    val k2=io.free_list_q
+    
+     io.allocated_n_n:= 0.U
++    io.out:= 0.U
++
+     // when (io.allocated_n_q < chiselTypeOf(REVNODE_BUF_N)) 
+     when (io.allocated_n_q < REVNODE_BUF_N_c) 
+     {
+@@ -76,11 +79,11 @@ class alloc_new  extends Module
+       io.out:=CAP_REVNODE_ID_NULL
+     }
+     io.free_list_n := io.node_pool_q(k2).next
+-    io.out := io.free_list_q
++    // io.out := io.free_list_q
+    }
+ 
+-class alloc_new_uncommitted  extends Module 
+-   { 
++class alloc_new_uncommitted  extends Module //mlabaf//bug in origin code with multiple return
++{ 
+     val io = IO(new Bundle{
+     val uncommitted_free_list_q    = Input(cap_revnode_id_t)
+     val uncommitted_free_list_n    = Output(cap_revnode_id_t)
+@@ -90,6 +93,8 @@ class alloc_new_uncommitted  extends Module
+     val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
+    })
+   io.uncommitted_allocated_n_n := 0.U
++  io.uncommitted_free_list_n   := 0.U
++  io.out:= 0.U
+   when (io.uncommitted_allocated_n_q < REVNODE_BUF_N_c)
+    {
+       io.uncommitted_allocated_n_n := io.uncommitted_allocated_n_q + 1.U
+@@ -103,52 +108,12 @@ class alloc_new_uncommitted  extends Module
+    } 
+ 
+     io.uncommitted_free_list_n := io.node_pool_q(io.uncommitted_free_list_q).next
+-    io.out:= io.uncommitted_free_list_q
++    // io.out:= io.uncommitted_free_list_q
+   
+-   }
+-
+-// class do_split extends Module 
+-//    { 
+-//     val io = IO(new Bundle{
+-//     val revnode_id    = Input(cap_revnode_id_t)
+-//     val out            = Output(cap_revnode_id_t)
+-//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
+-//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
+-//     val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
+-//     val allocated_n_q  = Input(UInt(32.W))
+-//     val free_list_q    = Input (cap_revnode_id_t)
+-//    })
+-
+-//     val  prev_node = Wire (cap_revnode_id_t)
+-//     val new_node  = Module(new alloc_new)
+-//     new_node.io.allocated_n_q  := io.allocated_n_q
+-//     new_node.io.free_list_q    := io.free_list_q 
+-//     new_node.io.node_pool_q    := io.node_pool_q
+-
+-//     io.node_pool_n(new_node.io.out).depth    := io.node_pool_q(io.revnode_id).depth
+-//     io.node_pool_n(new_node.io.out).valid    := 1.U
+-//     io.node_pool_n(new_node.io.out).linear   := 1.U
+-//     io.node_pool_n(new_node.io.out).refcount := 1.U
+-
+-//     prev_node := io.node_pool_q(io.revnode_id).prev
+-//     io.node_pool_n(new_node.io.out).prev := prev_node
+-
+-//     val revnode_id_is_null_n=Module(new(revnode_id_is_null))
+-//     revnode_id_is_null_n.io.revnode_id:=io.free_list_q
+-
+-//     when (revnode_id_is_null_n.io.out===0.U)
+-//     {
+-//       io.node_pool_n(prev_node).next := new_node.io.out  
+-//     }
+-   
+-//     io.node_pool_n(new_node.io.out).next := io.revnode_id
+-//     io.node_pool_n(io.revnode_id).prev   := new_node.io.out
+-
+-//     io.out := new_node.io.out
+-//   }
++}
+ 
+ class do_create  extends Module 
+-   { 
++{ 
+     val io = IO(new Bundle{
+     val revnode_id    = Input(cap_revnode_id_t)
+     val out            = Output(cap_revnode_id_t)
+@@ -168,104 +133,19 @@ class do_create  extends Module
+     // node_pool_n[new_node].valid = 1'b0; // just a sanity check
+     // $display("Created new node = %d", new_node);
+     io.out:=new_node.io.out
+-  }
+-  
+-  // create a revocation node as the parent node
+-// class do_mrev  extends Module 
+-//   { 
+-//     val io = IO(new Bundle{
+-//     val revnode_id     = Input(cap_revnode_id_t)
+-//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
+-//     val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
+-//     val out            = Output(cap_revnode_id_t)
+-//     val allocated_n_q = Input(UInt(32.W))
+-//     val free_list_q   = Input (cap_revnode_id_t)
+-//     })
+-
+-//   //    val split  = Module(new do_split)
+-//   //    split.io.revnode_id    := io.revnode_id
+-//   //    split.io.node_pool_q   := io.node_pool_q
+-//   //    io.node_pool_n         := split.io.node_pool_n
+-//   //    split.io.allocated_n_q := io.allocated_n_q
+-//   //    split.io.free_list_q   := io.free_list_q
+-
+-//   //   io.node_pool_n(io.revnode_id).depth := io.node_pool_q(io.revnode_id).depth + 1.U(32.W)
+-//   //  // return do_split(revnode_id);
+-//   //   io.out:= split.io.out
+-
+-//     val  prev_node = Wire (cap_revnode_id_t)
+-//     val new_node  = Module(new alloc_new)
+-//     new_node.io.allocated_n_q  := io.allocated_n_q
+-//     new_node.io.free_list_q    := io.free_list_q 
+-//     new_node.io.node_pool_q    := io.node_pool_q
+-
+-//     node_pool_n(new_node.io.out).depth    := node_pool_q(io.revnode_id).depth
+-//     node_pool_n(new_node.io.out).valid    := 1.U
+-//     node_pool_n(new_node.io.out).linear   := 1.U
+-//     node_pool_n(new_node.io.out).refcount := 1.U
+-
+-//     prev_node := node_pool_q(io.revnode_id).prev
+-//     node_pool_n(new_node.io.out).prev := prev_node
+-
+-//     val revnode_id_is_null_n=Module(new(revnode_id_is_null))
+-//     revnode_id_is_null_n.io.revnode_id:=free_list_q
+-
+-//     when (revnode_id_is_null_n.io.out===0.U)
+-//     {
+-//       node_pool_n(prev_node).next := new_node.io.out  
+-//     }
+-   
+-//     node_pool_n(new_node.io.out).next := revnode_id
+-//     node_pool_n(io.revnode_id).prev   := new_node.io.out
+-
+-//   }
+-
+-  // returns whether the original content of the memory region can be retained
+-  // class do_revoke extends Module {
+-  //   val io = IO(new Bundle{ 
+-  //    val revnode_id     = Input(cap_revnode_id_t)
+-  //    val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
+-  //    val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
+-  //    val out            = Output(cap_revnode_id_t)
+-    
+-  //    })
+-  //    var depth       = Wire(UInt(32.W))
+-  //    var cur         = Wire(cap_revnode_id_t) 
+-  //    var retain_data = Wire(UInt(1.W))
+-
+-  //    depth := io.node_pool_q(io.revnode_id).depth
+-  //    cur   := io.node_pool_q(io.revnode_id).next
+-  //    retain_data := 1.U
+-
+-  //   val revnode_id_is_null_n = Module(new(revnode_id_is_null))
+-  //   revnode_id_is_null_n.io.revnode_id:=cur
+-
+-  //    when ((revnode_id_is_null_n.io.out===0.U) && (io.node_pool_q(cur).depth > depth)) 
+-  //    {
+-  //     retain_data := retain_data | ~io.node_pool_q(cur).linear
+-  //     io.node_pool_n(cur).valid := 0.U
+-  //    }
+-
+-  //    io.node_pool_n(io.revnode_id).next := cur
+-  //    when (revnode_id_is_null_n.io.out===0.U) 
+-  //    {
+-  //      io.node_pool_n(cur).prev := io.revnode_id
+-  //    }
+-
+-  //    io.out:= retain_data
+-  //  }
+-
+-   class do_delin extends Module {
++}
++class do_delin extends Module 
++{
+     val io = IO(new Bundle{ 
+      val revnode_id     = Input(cap_revnode_id_t)
+      val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))    
+      })
+ 
+     io.node_pool_n(io.revnode_id).linear := 0.U
+-  }
++}
+ 
+- class do_init extends Module 
+-  { 
++class do_init extends Module 
++{ 
+    val io = IO(new Bundle{
+    val allocated_n_n  = Output(UInt(32.W))
+    val free_list_n    = Output(cap_revnode_id_t)
+@@ -289,9 +169,9 @@ class do_create  extends Module
+     // $display("Node unit initialisation done");
+   }
+ 
+- class mock_node_unit extends Module 
+-   { 
+-    val io = IO(new Bundle{
++class mock_node_unit extends Module 
++ { 
++     val io = IO(new Bundle{
+       val flush_i = Input(UInt(1.W))
+       // query interface (asynchronous)
+       val query_valid_i = Input(Vec(3, UInt (1.W)))
+@@ -341,11 +221,12 @@ class do_create  extends Module
+     // always_comb begin
+       io.query_resp_o(0).r_valid := node_pool_q(query_last_q(0).node_id).valid
+     //   for (int unsigned j = 0; j < ALLOC_BUFFER_N; j ++) begin
+-        when((uncommitted_allocated_n_q(0) === query_last_q(0).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(0).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(0).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(0).node_id) ) 
+-        {
+-          io.query_resp_o(0).r_valid := 1.U
+-        }
++      when((uncommitted_allocated_n_q(0) === query_last_q(0).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(0).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(0).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(0).node_id) ) 
++      {
++        io.query_resp_o(0).r_valid := 1.U
++      }
+ 
++    // from capstone_unit//from load and store unit
+     //index 1
+      io.query_ready_o(1) := ~io.query_stall_i
+      io.query_resp_o(1).trans_id := query_last_q(1).trans_id
+@@ -355,10 +236,10 @@ class do_create  extends Module
+ 
+       io.query_resp_o(1).r_valid := node_pool_q(query_last_q(1).node_id).valid
+     //   for (int unsigned j = 0; j < ALLOC_BUFFER_N; j ++) begin
+-        when((uncommitted_allocated_n_q(0) === query_last_q(1).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(1).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(1).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(1).node_id) ) 
+-        {
+-          io.query_resp_o(1).r_valid := 1.U
+-        }
++      when((uncommitted_allocated_n_q(0) === query_last_q(1).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(1).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(1).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(1).node_id) ) 
++      {
++        io.query_resp_o(1).r_valid := 1.U
++      }
+ 
+     //index 2
+      io.query_ready_o(2) := ~io.query_stall_i
+@@ -369,33 +250,33 @@ class do_create  extends Module
+   
+       io.query_resp_o(2).r_valid := node_pool_q(query_last_q(2).node_id).valid
+     //   for (int unsigned j = 0; j < ALLOC_BUFFER_N; j ++) begin
+-        when((uncommitted_allocated_n_q(0) === query_last_q(2).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(2).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(2).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(2).node_id) ) 
+-        {
+-          io.query_resp_o(2).r_valid := 1.U
+-        }
+-
+-  // allocation
+-
+-
+-  val uncommitted_alloc_buffer_q, uncommitted_alloc_buffer_d,alloc_buffer_q, alloc_buffer_d= RegInit(VecInit(Seq.fill(ALLOC_BUFFER_N)("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))) //Vec(ALLOC_BUFFER_N, cap_revnode_id_t) //?
+-  val alloc_valid_last_q = RegInit(0.U(1.W))
+-  val alloc_node_id_q, alloc_node_id_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
+-  io.alloc_ready_o := 1.U
+-  io.alloc_valid_o := alloc_valid_last_q
+-  io.alloc_node_id_o := alloc_node_id_q
++      when((uncommitted_allocated_n_q(0) === query_last_q(2).node_id)||(uncommitted_allocated_n_q(1) === query_last_q(2).node_id) ||(uncommitted_allocated_n_q(2) === query_last_q(2).node_id) ||(uncommitted_allocated_n_q(3) === query_last_q(2).node_id) ) 
++      {
++        io.query_resp_o(2).r_valid := 1.U
++      }
+ 
+-  // mutation
+-   io.mut_ready_o := 1.U
++   // allocation
+ 
+ 
+-  // committed node allocation state
+-  val allocated_n_q, allocated_n_n = RegInit(0.U(32.W))
+-  // all inflight states
+-  val uncommitted_free_list_q, uncommitted_free_list_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
++   val uncommitted_alloc_buffer_q, uncommitted_alloc_buffer_d,alloc_buffer_q, alloc_buffer_d= RegInit(VecInit(Seq.fill(ALLOC_BUFFER_N)("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))) //Vec(ALLOC_BUFFER_N, cap_revnode_id_t) //?
++   val alloc_valid_last_q = RegInit(0.U(1.W))
++   val alloc_node_id_q, alloc_node_id_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
++   io.alloc_ready_o := 1.U
++   io.alloc_valid_o := alloc_valid_last_q
++   io.alloc_node_id_o := alloc_node_id_q
++  
++   // mutation
++    io.mut_ready_o := 1.U
++  
++  
++   // committed node allocation state
++   val allocated_n_q, allocated_n_n = RegInit(0.U(32.W))
++   // all inflight states
++   val uncommitted_free_list_q, uncommitted_free_list_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
+ 
+-  // single-cycle non-synthesisable implementation
++   // single-cycle non-synthesisable implementation
+ 
+-  // always_comb begin : commit_mut
++   // always_comb begin : commit_mut
+     allocated_n_n := allocated_n_q
+     free_list_n   := free_list_q
+     node_pool_n   := node_pool_q
+@@ -405,6 +286,15 @@ class do_create  extends Module
+     // coming from commit, so don't care about flush_i
+     printf("node_mut_type_t.io.mut_valid_i %b \n", io.mut_valid_i)
+     printf("node_mut_type_t.io.mut_i.node_op %b \n", io.mut_i.node_op)
++    
++    //var needed in below when
++    var depth       = Wire(UInt(32.W))
++    var cur         = RegInit(0.U(32.W))//(cap_revnode_id_t) 
++    var retain_data = RegInit(0.U(1.W))
++    val prev_node   = Wire (cap_revnode_id_t)   
++    prev_node := 0.U
++    depth     := 0.U
++    
+     when (io.mut_valid_i===1.U) 
+     {
+       // just a single cycle, process the committed operation
+@@ -433,7 +323,7 @@ class do_create  extends Module
+        
+       }
+       is ( node_mut_type_t.NODE_MREV) 
+-      {
++      {  // create a revocation node as the parent node
+         // val do_mrev_f  = Module(new do_mrev)
+         // do_mrev_f.io.revnode_id    :=  io.mut_i.node_id
+         // do_mrev_f.io.node_pool_q   :=  node_pool_q
+@@ -441,7 +331,7 @@ class do_create  extends Module
+         // do_mrev_f.io.free_list_q   := free_list_q 
+         // node_pool_n := do_mrev_f.io.node_pool_n 
+ 
+-        val  prev_node = Wire (cap_revnode_id_t)
++        // val  prev_node = Wire (cap_revnode_id_t)
+         val new_node  = Module(new alloc_new)
+         new_node.io.allocated_n_q  := allocated_n_q
+         new_node.io.free_list_q    := free_list_q 
+@@ -469,15 +359,15 @@ class do_create  extends Module
+ 
+       }
+       is ( node_mut_type_t.NODE_REVOKE) 
+-      {
+-        // val do_revoke_f  = Module(new do_revoke)// TODO: uninitialised capability
+-        // do_revoke_f.io.revnode_id := io.mut_i.node_id
+-        // do_revoke_f.io.node_pool_q:= node_pool_q
+-        // node_pool_n:= do_revoke_f.io.node_pool_n  
+-        // val out            = Output(cap_revnode_id_t)
+-          var depth       = Wire(UInt(32.W))
+-          var cur         = Reg(cap_revnode_id_t) 
+-          var retain_data = Reg(UInt(1.W))
++      {  // returns whether the original content of the memory region can be retained
++        // //val do_revoke_f  = Module(new do_revoke)// TODO: uninitialised capability
++        //// do_revoke_f.io.revnode_id := io.mut_i.node_id
++        // //do_revoke_f.io.node_pool_q:= node_pool_q
++        // //node_pool_n:= do_revoke_f.io.node_pool_n  
++        // //val out            = Output(cap_revnode_id_t)
++          // var depth       = Wire(UInt(32.W))
++          // var cur         = Reg(cap_revnode_id_t) 
++          // var retain_data = Reg(UInt(1.W))
+ 
+           depth := node_pool_q(io.mut_i.node_id).depth
+           cur   := node_pool_q(io.mut_i.node_id).next
+@@ -510,7 +400,7 @@ class do_create  extends Module
+           //  node_pool_n := split_f.io.node_pool_n
+     
+     
+-         val  prev_node = Wire (cap_revnode_id_t)
++        //  val  prev_node = Wire (cap_revnode_id_t)
+          val new_node  = Module(new alloc_new)
+          new_node.io.allocated_n_q  := allocated_n_q    
+          new_node.io.free_list_q    := free_list_q 
+@@ -543,25 +433,25 @@ class do_create  extends Module
+        node_pool_n(new_node.io.out).linear   := 1.U
+        node_pool_n(new_node.io.out).refcount := 1.U
+     
+-       prev_node := node_pool_q(io.mut_i.node_id).prev
+-       node_pool_n(new_node.io.out).prev := prev_node
+-       printf("node_mut_type_t.NODE_SPLIT\n")    
++       printf("node_mut_type_t.NODE_SPLIT: %b , %b , \n",new_node.io.out,io.mut_i.node_id )    
+       }
+       is ( node_mut_type_t.NODE_DELIN) 
+       {
+-      //  val do_delin_f  = Module(new do_delin)
+-      //  do_delin_f.io.revnode_id := io.mut_i.node_id
+-      //  node_pool_n              := do_delin_f.io.node_pool_n
++       //  val do_delin_f  = Module(new do_delin)
++       //  do_delin_f.io.revnode_id := io.mut_i.node_id
++       //  node_pool_n              := do_delin_f.io.node_pool_n
+     
+         node_pool_n( io.mut_i.node_id).linear := 0.U
++        printf("node_mut_type_t.NODE_DELIN , node_id, node_pool_linear= %b , %b\n", io.mut_i.node_id,node_pool_n( io.mut_i.node_id).linear )
+         printf("node_mut_type_t.NODE_DELIN\n")
+ 
+       }
+       is ( node_mut_type_t.NODE_INIT) 
+-      {       
++      {// the first three node ids should be guaranteed to be 0, 1, and 2
++       // assumed in CAPENTER       
+        val do_init_f      = Module(new do_init)
+-       allocated_n_n  := do_init_f.io.allocated_n_n
+-       free_list_n    := do_init_f.io.free_list_n
++       allocated_n_n     := do_init_f.io.allocated_n_n
++       free_list_n       := do_init_f.io.free_list_n
+        node_pool_n(0)    := do_init_f.io.node_pool_n0
+        node_pool_n(1)    := do_init_f.io.node_pool_n1
+        node_pool_n(2)    := do_init_f.io.node_pool_n2
+@@ -571,13 +461,13 @@ class do_create  extends Module
+       }
+       is ( node_mut_type_t.NODE_CREATE) 
+       {
+-      //  val do_create_f    = Module(new do_create)
+-      //  do_create_f.io.revnode_id     := io.mut_i.node_id
+-      //  node_pool_n                   := do_create_f.io.node_pool_n
+-      //  do_create_f.io.node_pool_q    := node_pool_q
+-      //  do_create_f.io.allocated_n_q  := allocated_n_q 
+-      //  do_create_f.io.free_list_q    := free_list_q 
+-      //  do_create_f.io.REVNODE_INIT   := REVNODE_INIT   
++       //  val do_create_f    = Module(new do_create)
++       //  do_create_f.io.revnode_id     := io.mut_i.node_id
++       //  node_pool_n                   := do_create_f.io.node_pool_n
++       //  do_create_f.io.node_pool_q    := node_pool_q
++       //  do_create_f.io.allocated_n_q  := allocated_n_q 
++       //  do_create_f.io.free_list_q    := free_list_q 
++       //  do_create_f.io.REVNODE_INIT   := REVNODE_INIT   
+ 
+        val new_node  = Module(new alloc_new)
+        new_node.io.allocated_n_q  := allocated_n_q
+@@ -636,16 +526,142 @@ class do_create  extends Module
+     alloc_valid_last_q := io.alloc_valid_i & ~io.flush_i
+     uncommitted_alloc_buffer_q := uncommitted_alloc_buffer_d
+     alloc_buffer_q  := alloc_buffer_d
+-    alloc_node_id_q := alloc_node_id_n
++    alloc_node_id_q := alloc_node_id_n//C
+     node_pool_q     := node_pool_n
+     allocated_n_q   := allocated_n_n
+     free_list_q     := free_list_n
+-    uncommitted_allocated_n_q := uncommitted_allocated_n_n
++    uncommitted_allocated_n_q := uncommitted_allocated_n_n//C
+     uncommitted_free_list_q   := uncommitted_free_list_n
+-  
++    printf("uncommitted_allocated_n_q , uncommitted_free_list_q= %b, %b, %b , %b, %b\n", uncommitted_allocated_n_q, uncommitted_free_list_q, allocated_n_q, free_list_q, alloc_node_id_n)
+ 
+-   }
+ 
++ }
++
++   
++
++// class do_split extends Module 
++//    { 
++//     val io = IO(new Bundle{
++//     val revnode_id    = Input(cap_revnode_id_t)
++//     val out            = Output(cap_revnode_id_t)
++//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
++//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
++//     val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
++//     val allocated_n_q  = Input(UInt(32.W))
++//     val free_list_q    = Input (cap_revnode_id_t)
++//    })
++
++//     val  prev_node = Wire (cap_revnode_id_t)
++//     val new_node  = Module(new alloc_new)
++//     new_node.io.allocated_n_q  := io.allocated_n_q
++//     new_node.io.free_list_q    := io.free_list_q 
++//     new_node.io.node_pool_q    := io.node_pool_q
++
++//     io.node_pool_n(new_node.io.out).depth    := io.node_pool_q(io.revnode_id).depth
++//     io.node_pool_n(new_node.io.out).valid    := 1.U
++//     io.node_pool_n(new_node.io.out).linear   := 1.U
++//     io.node_pool_n(new_node.io.out).refcount := 1.U
++
++//     prev_node := io.node_pool_q(io.revnode_id).prev
++//     io.node_pool_n(new_node.io.out).prev := prev_node
++
++//     val revnode_id_is_null_n=Module(new(revnode_id_is_null))
++//     revnode_id_is_null_n.io.revnode_id:=io.free_list_q
++
++//     when (revnode_id_is_null_n.io.out===0.U)
++//     {
++//       io.node_pool_n(prev_node).next := new_node.io.out  
++//     }
+    
++//     io.node_pool_n(new_node.io.out).next := io.revnode_id
++//     io.node_pool_n(io.revnode_id).prev   := new_node.io.out
++
++//     io.out := new_node.io.out
++//   }
++
++  // create a revocation node as the parent node
++// class do_mrev  extends Module 
++//   { 
++//     val io = IO(new Bundle{
++//     val revnode_id     = Input(cap_revnode_id_t)
++//     val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
++//     val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
++//     val out            = Output(cap_revnode_id_t)
++//     val allocated_n_q = Input(UInt(32.W))
++//     val free_list_q   = Input (cap_revnode_id_t)
++//     })
++
++//   //    val split  = Module(new do_split)
++//   //    split.io.revnode_id    := io.revnode_id
++//   //    split.io.node_pool_q   := io.node_pool_q
++//   //    io.node_pool_n         := split.io.node_pool_n
++//   //    split.io.allocated_n_q := io.allocated_n_q
++//   //    split.io.free_list_q   := io.free_list_q
++
++//   //   io.node_pool_n(io.revnode_id).depth := io.node_pool_q(io.revnode_id).depth + 1.U(32.W)
++//   //  // return do_split(revnode_id);
++//   //   io.out:= split.io.out
++
++//     val  prev_node = Wire (cap_revnode_id_t)
++//     val new_node  = Module(new alloc_new)
++//     new_node.io.allocated_n_q  := io.allocated_n_q
++//     new_node.io.free_list_q    := io.free_list_q 
++//     new_node.io.node_pool_q    := io.node_pool_q
++
++//     node_pool_n(new_node.io.out).depth    := node_pool_q(io.revnode_id).depth
++//     node_pool_n(new_node.io.out).valid    := 1.U
++//     node_pool_n(new_node.io.out).linear   := 1.U
++//     node_pool_n(new_node.io.out).refcount := 1.U
++
++//     prev_node := node_pool_q(io.revnode_id).prev
++//     node_pool_n(new_node.io.out).prev := prev_node
++
++//     val revnode_id_is_null_n=Module(new(revnode_id_is_null))
++//     revnode_id_is_null_n.io.revnode_id:=free_list_q
++
++//     when (revnode_id_is_null_n.io.out===0.U)
++//     {
++//       node_pool_n(prev_node).next := new_node.io.out  
++//     }
++   
++//     node_pool_n(new_node.io.out).next := revnode_id
++//     node_pool_n(io.revnode_id).prev   := new_node.io.out
++
++//   }
++
++  // returns whether the original content of the memory region can be retained
++  // class do_revoke extends Module {
++  //   val io = IO(new Bundle{ 
++  //    val revnode_id     = Input(cap_revnode_id_t)
++  //    val node_pool_n    = Output(Vec(REVNODE_BUF_N,new revnode_t))
++  //    val node_pool_q    = Input(Vec(REVNODE_BUF_N,new revnode_t))
++  //    val out            = Output(cap_revnode_id_t)
++    
++  //    })
++  //    var depth       = Wire(UInt(32.W))
++  //    var cur         = Wire(cap_revnode_id_t) 
++  //    var retain_data = Wire(UInt(1.W))
++
++  //    depth := io.node_pool_q(io.revnode_id).depth
++  //    cur   := io.node_pool_q(io.revnode_id).next
++  //    retain_data := 1.U
++
++  //   val revnode_id_is_null_n = Module(new(revnode_id_is_null))
++  //   revnode_id_is_null_n.io.revnode_id:=cur
++
++  //    when ((revnode_id_is_null_n.io.out===0.U) && (io.node_pool_q(cur).depth > depth)) 
++  //    {
++  //     retain_data := retain_data | ~io.node_pool_q(cur).linear
++  //     io.node_pool_n(cur).valid := 0.U
++  //    }
++
++  //    io.node_pool_n(io.revnode_id).next := cur
++  //    when (revnode_id_is_null_n.io.out===0.U) 
++  //    {
++  //      io.node_pool_n(cur).prev := io.revnode_id
++  //    }
++
++  //    io.out:= retain_data
++  //  }
+ 
+ 
+diff --git a/src/main/scala/xiangshan/backend/fu/util/CSRConst.scala b/src/main/scala/xiangshan/backend/fu/util/CSRConst.scala
+index 828fb6c0a..b69f33b3c 100644
+--- a/src/main/scala/xiangshan/backend/fu/util/CSRConst.scala
++++ b/src/main/scala/xiangshan/backend/fu/util/CSRConst.scala
+@@ -24,6 +24,18 @@ import xiangshan.backend._
+ import utils.XSDebug
+ 
+ trait HasCSRConst {
++  //capability ccsr
++  //mlabaf//capstone
++  val CCSR_CTVEC     = 0x000
++  val CCSR_CIH       = 0x001
++  val CCSR_CEPC      = 0x002
++  val CCSR_CMMU      = 0x003
++  val CCSR_CSCRATCH  = 0x004
++  val CCSR_CPMP_BASE = 0x010
++  val CSR_CIS        = 0x800
++  val CSR_CID        = 0x801
++  val CSR_CIC        = 0x802
++  val CSR_OFFSETMMU  = 0x803
+ 
+   // User Trap Setup
+   val Ustatus       = 0x000
+diff --git a/src/main/scala/xiangshan/package.scala b/src/main/scala/xiangshan/package.scala
+index 5612a0c5e..7256b8427 100644
+--- a/src/main/scala/xiangshan/package.scala
++++ b/src/main/scala/xiangshan/package.scala
+@@ -33,6 +33,39 @@ package object xiangshan {
+    // ---------------
+   // Node unit
+   // ---------------
++    object mut_st_t {
++      def MUT_IDLE                       = "b0000".U
++      def MUT_LOAD_WAIT_READY            = "b0001".U
++      def MUT_STORE_WAIT_READY           = "b0010".U
++      def MUT_SPLIT_LOAD_WAIT_RESP       = "b0011".U
++      def MUT_SPLIT_STORE_NEW            = "b0100".U
++      def MUT_SPLIT_LOAD_LEFT            = "b0101".U
++      def MUT_SPLIT_LOAD_LEFT_WAIT_RESP  = "b0110".U
++      def MUT_DELIN_LOAD_WAIT_RESP       = "b0111".U
++      def MUT_INIT_STORE2                = "b1000".U
++      def MUT_INIT_STORE3                = "b1001".U
++      def MUT_REVOKE_LOAD_WAIT_RESP      = "b1010".U
++      def MUT_REVOKE_LOAD2_WAIT_RESP     = "b1011".U
++      def MUT_REVOKE_LOAD3_WAIT_RESP     = "b1100".U
++      def MUT_REVOKE_LOAD_NEXT           = "b1101".U
++      def MUT_REVOKE_STORE               = "b1110".U
++    } 
++    
++    object free_list_update_state_t{
++    def FREE_LIST_UPDATE_IDLE       = "b00".U
++    def FREE_LIST_UPDATE_WAIT_READY = "b01".U 
++    def FREE_LIST_UPDATE_WAIT_RESP  = "b10".U
++    } 
++
++    object query_state_t {
++    def QUERY_IDLE       = "b00".U  
++    def QUERY_WAIT_READY = "b01".U
++    def QUERY_WAIT_RESP  = "b10".U
++  } 
++  def ALLOC_BUFFER_N = 4 //ToDo localparam CVA6ConfigNrScoreboardEntries = 4;
++
++  def QueryPortNum=3
++
+   object node_mut_type_t{
+     def NODE_INC    = "b0000".U
+     def NODE_DEC    = "b0001".U
+@@ -50,6 +83,9 @@ package object xiangshan {
+     def NODE_ALLOC_RECEIVED = "b10".U
+   }
+ 
++def RevNodeBufN = 1024
++def QueryPortBase = 0
++
+ def REVNODE_BUF_N_c = 1024.U
+ def REVNODE_BUF_N = 1024
+ 

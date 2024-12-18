@@ -1,0 +1,33 @@
+From 60cfe4c1e76e290fefa07019644017be89d7e715 Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Tue, 25 Jun 2024 10:16:05 +0800
+Subject: [PATCH 01/16] First change decodeunit for Capstone
+
+---
+ src/main/scala/xiangshan/backend/decode/DecodeUnit.scala | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+index a923a29ff..4ae0bbcaf 100644
+--- a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
++++ b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+@@ -70,11 +70,15 @@ trait DecodeUnitConstants
+ /**
+  * Decode constants for RV64
+  */
+-object X64Decode extends DecodeConstants {
++object X64Decode extends DecodeConstants {,.fdsa  QWE7890--094321`  cxvbnjkl;'
++"/:.l,kl.;'
++;.;';.k,jmhnbgvfdescwaz -0'
+   val table: Array[(BitPat, List[BitPat])] = Array(
+     LD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.IMM_I),
++    CLD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.IMM_I),//ML Cpability Load
+     LWU     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.lwu, Y, N, N, N, N, N, SelImm.IMM_I),
+     SD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.IMM_S),
++    CSD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.IMM_S),//ML Capability Store
+ 
+     SLLI    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, ALUOpType.sll, Y, N, N, N, N, N, SelImm.IMM_I),
+     SRLI    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, ALUOpType.srl, Y, N, N, N, N, N, SelImm.IMM_I),
+-- 
+2.34.1
+

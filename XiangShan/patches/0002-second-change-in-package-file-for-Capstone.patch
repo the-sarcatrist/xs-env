@@ -1,0 +1,146 @@
+From 369e83f0530a3dcbb8fef6a0f63e6b33c780d417 Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Tue, 25 Jun 2024 15:58:51 +0800
+Subject: [PATCH 02/16] second change in package file for Capstone
+
+---
+ .../xiangshan/backend/decode/DecodeUnit.scala | 44 ++++++++++++++++---
+ src/main/scala/xiangshan/package.scala        | 44 ++++++++++++++++++-
+ 2 files changed, 80 insertions(+), 8 deletions(-)
+
+diff --git a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+index 4ae0bbcaf..d926a7625 100644
+--- a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
++++ b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+@@ -67,19 +67,51 @@ trait DecodeUnitConstants
+  * See xiangshan/package.scala, xiangshan/backend/package.scala, Bundle.scala
+  */
+ 
++ /**
++ * Decode constants for RV64
++ */
++//Mlabaf Capstone instruction
++object CapstonDecode extends DecodeConstants {
++  val table: Array[(BitPat, List[BitPat])] = Array(
++    CLD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.x),
++    CSD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.x),
++
++    CMOV    -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cmov, Y, N, N, N, N, N, SelImm.x),
++    CTIGHT  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ctight, Y, N, N, N, N, N, SelImm.x),
++    CSHRINK -> List(SrcType.imm, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cshrink, Y, N, N, N, N, N, SelImm.x),
++
++    CSPLIT  -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.csplit, Y, N, N, N, N, N, SelImm.x),
++    CDELIN  -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cdelin, Y, N, N, N, N, N, SelImm.x),
++    CSCC    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cscc, Y, N, N, N, N, N, SelImm.x),
++    CLCC    -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.clcc, Y, N, N, N, N, N, SelImm.x),
++
++    CREVOKE -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.crevoke, Y, N, N, N, N, N, SelImm.X),
++    CMREV   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cmrev, Y, N, N, N, N, N, SelImm.X),
++    CINIT   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cinit, Y, N, N, N, N, N, SelImm.X),
++    CDROP   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cdrop, Y, N, N, N, N, N, SelImm.X),
++    CSEAL   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cseal, Y, N, N, N, N, N, SelImm.X),
++
++    CCALL    -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccall, Y, N, N, N, N, N, SelImm.X),
++    CRETURN  -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.creturn, Y, N, N, N, N, N, SelImm.x),
++    CRETSEAL -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cretseal, Y, N, N, N, N, N, SelImm.X),
++    CEXCEPT  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cexcept, Y, N, N, N, N, N, SelImm.X),
++    CJMP     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cjmp, Y, N, N, N, N, N, SelImm.x),
++    CJNZ     -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cjnz, Y, N, N, N, N, N, SelImm.X)
++    CLI      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cli, Y, N, N, N, N, N, SelImm.X),
++    CADD     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cadd, Y, N, N, N, N, N, SelImm.x),
++    CLT      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.clt, Y, N, N, N, N, N, SelImm.X),
++    CINVALID -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cinvalid, Y, N, N, N, N, N, SelImm.X)  
++  )
++}
+ /**
+  * Decode constants for RV64
+  */
+-object X64Decode extends DecodeConstants {,.fdsa  QWE7890--094321`  cxvbnjkl;'
+-"/:.l,kl.;'
+-;.;';.k,jmhnbgvfdescwaz -0'
++object X64Decode extends DecodeConstants {
+   val table: Array[(BitPat, List[BitPat])] = Array(
+     LD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.IMM_I),
+-    CLD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.IMM_I),//ML Cpability Load
+     LWU     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.lwu, Y, N, N, N, N, N, SelImm.IMM_I),
+     SD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.IMM_S),
+-    CSD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.IMM_S),//ML Capability Store
+-
++    
+     SLLI    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, ALUOpType.sll, Y, N, N, N, N, N, SelImm.IMM_I),
+     SRLI    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, ALUOpType.srl, Y, N, N, N, N, N, SelImm.IMM_I),
+     SRAI    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, ALUOpType.sra, Y, N, N, N, N, N, SelImm.IMM_I),
+diff --git a/src/main/scala/xiangshan/package.scala b/src/main/scala/xiangshan/package.scala
+index cf58ba23c..05a1ff87b 100644
+--- a/src/main/scala/xiangshan/package.scala
++++ b/src/main/scala/xiangshan/package.scala
+@@ -219,6 +219,33 @@ package object xiangshan {
+     def nofence= "b00000".U
+   }
+ 
++// mlabaf// capstone 
++    object CapstoneType {
++    def cmov     = "b000_000".U
++    def ctight   = "b000_001".U
++    def cshrink  = "b000_010".U
++    def csplit   = "b000_011".U
++    def cdelin   = "b000_100".U
++    def cscc     = "b000_101".U
++    def clcc     = "b000_110".U
++    def crevoke  = "b000_111".U
++    def cmrev    = "b001_000".U
++    def cinit    = "b001_001".U
++    def cdrop    = "b001_010".U
++    def cseal    = "b001_011".U
++    def ccall    = "b001_100".U
++    def creturn  = "b001_101".U
++    def cretseal = "b001_110".U
++    def cexcept  = "b001_111".U 
++    def cjmp     = "b010_000".U
++    def cjnz     = "b010_001".U
++    def cli      = "b010_010".U
++    def cadd     = "b010_011".U
++    def clt      = "b010_100".U
++    def cinvalid = "b010_101".U     
++  }
++
++
+   object ALUOpType {
+     // shift optype
+     def slliuw     = "b000_0000".U // slliuw: ZEXT(src1[31:0]) << shamt
+@@ -363,9 +390,22 @@ package object xiangshan {
+   }
+ 
+   object LSUOpType {
++    // Capstone instruction//mlabaf
++      // normal load//func3
++    // Note: bit(1, 0) are size, DO NOT CHANGE
++    // bit encoding: | load 0 | is unsigned(1bit) | size(2bit) |
++    def lb       = "b0000".U
++    def lh       = "b0001".U
++    def lw       = "b0010".U
++    def ld       = "b0011".U
++    def lbu      = "b0100".U
++    def lhu      = "b0101".U
++    def lwu      = "b0110".U
++
++
+     // load pipeline
+ 
+-    // normal load
++    // normal load//func3
+     // Note: bit(1, 0) are size, DO NOT CHANGE
+     // bit encoding: | load 0 | is unsigned(1bit) | size(2bit) |
+     def lb       = "b0000".U
+@@ -384,7 +424,7 @@ package object xiangshan {
+ 
+     def isPrefetch(op: UInt): Bool = op(3)
+ 
+-    // store pipeline
++    // store pipeline//func3
+     // normal store
+     // bit encoding: | store 00 | size(2bit) |
+     def sb       = "b0000".U
+-- 
+2.34.1
+

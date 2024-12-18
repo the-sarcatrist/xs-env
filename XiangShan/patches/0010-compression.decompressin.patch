@@ -1,0 +1,201 @@
+From 595b93c849516d4e0d3c462d73932a44835b6fb0 Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Thu, 8 Aug 2024 15:50:10 +0800
+Subject: [PATCH 10/16] compression.decompressin
+
+---
+ src/main/scala/xiangshan/backend/fu/Alu.scala | 116 ++++++++++++------
+ 1 file changed, 77 insertions(+), 39 deletions(-)
+
+diff --git a/src/main/scala/xiangshan/backend/fu/Alu.scala b/src/main/scala/xiangshan/backend/fu/Alu.scala
+index fbafbf9d3..b81899536 100644
+--- a/src/main/scala/xiangshan/backend/fu/Alu.scala
++++ b/src/main/scala/xiangshan/backend/fu/Alu.scala
+@@ -87,7 +87,7 @@ import circt.stage.ChiselStage
+ 
+   // pack the cap and tag bits to bounce around the different stages
+   // the valid bit is used as sort of a write enable
+- class  fu_data_t extends Bundle{
++  class  fu_data_t extends Bundle{
+     val operand_a = UInt (XLEN.W)
+     val operand_b = UInt (XLEN.W)
+     val imm       = UInt (XLEN.W)
+@@ -131,20 +131,21 @@ class node_query_resp_t extends Bundle{
+ 
+   class send_node_query extends Module
+    {
+-    val revnode_id  = IO(Input(cap_renode_id_t))
+-    val node_query_sent_q  = IO(Input(UInt(1.W)))
+-    val node_query_ready_i = IO(Input(UInt(1.W)))
+-    val node_query_sent_d  = IO(Output(UInt(1.W))) 
+-    val node_query_valid_o = IO(Output(UInt(1.W))) 
++    val revnode_id                 = IO(Input(cap_renode_id_t))
++    val node_query_sent_q          = IO(Input(UInt(1.W)))
++    val node_query_ready_i         = IO(Input(UInt(1.W)))
++    val node_query_resp_valid_i    = IO(Input(UInt(1.W))) 
+     val node_query_resp_received_q = IO(Input(UInt(1.W))) 
+-    val rd_result_o  = IO(Output(new cap_result_t ))  
+-    val node_query_o = IO(Output(new node_query_t ))     
+-    val synchronous  = IO(Input(UInt(1.W)))
++    val synchronous                = IO(Input(UInt(1.W)))
++    val node_query_resp_i          = IO(Input(new node_query_resp_t))
++
++    val node_query_sent_d          = IO(Output(UInt(1.W))) 
++    val node_query_valid_o         = IO(Output(UInt(1.W))) 
++    val rd_result_o                = IO(Output(new cap_result_t ))  
++    val node_query_o               = IO(Output(new node_query_t ))     
+     val node_query_resp_result_d   = IO(Output(UInt(1.W)))
+     val node_query_resp_received_d = IO(Output(UInt(1.W)))
+-    val node_query_resp_i = IO(Input(new node_query_resp_t))
+     val node_query_resp_result_q = IO(Output(UInt(1.W)))
+-    val node_query_resp_valid_i = IO(Input(UInt(1.W))) 
+ 
+      node_query_sent_d := node_query_sent_q  
+ 
+@@ -195,15 +196,14 @@ class node_query_resp_t extends Bundle{
+    class send_node_mut extends Module 
+    {
+     // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
+-    val revnode_id = IO(Input( cap_renode_id_t))
++    val revnode_id       = IO(Input( cap_renode_id_t))
+     val node_alloc_node_id_cur = IO(Input( cap_renode_id_t))
+-    val mut_ty     = IO(Input( UInt(4.W)))
++    val mut_ty           = IO(Input(UInt(4.W)))
++    val have_alloc       = IO(Input(UInt(1.W)))
+     val node_mut_valid_o = IO(Output(UInt(1.W)))
+-    val node_mut_o = IO(Output(new node_mut_t))
+-    val have_alloc = IO(Input(UInt(1.W)))
++    val node_mut_o       = IO(Output(new node_mut_t))
+      
+      node_mut_valid_o  := 1.U
+-
+      node_mut_o.node_id:= revnode_id
+      node_mut_o.node_op:= mut_ty
+      node_mut_o.alloc  := have_alloc
+@@ -213,15 +213,15 @@ class node_query_resp_t extends Bundle{
+   class send_node_alloc extends Module 
+   {
+     // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
+-    val cap_cc = IO(Input( new cap_cc_t))
+     val node_alloc_state_d   = IO(Output( UInt(4.W)))//IO(Output(new node_mut_type_t))
+-    val node_mut_valid_o     = IO(Output(UInt(1.W)))
+-    val node_alloc_state_q   = IO(Input(UInt(4.W)))
+-    val node_alloc_node_id_q = IO(Input(UInt(1.W)))
+-    val node_alloc_node_id_d = IO(Output(new node_mut_t))  
++    // val node_mut_valid_o     = IO(Output(UInt(1.W)))
++    // val node_alloc_node_id_d = IO(Output(new node_mut_t))  
+     val node_alloc_valid_o   = IO(Output(UInt(1.W))) 
+-    val node_alloc_ready_i   = IO(Output(UInt(1.W))) 
+-     
++    val node_alloc_ready_i   = IO(Input(UInt(1.W)))
++    val node_alloc_state_q   = IO(Input(UInt(4.W)))
++    // val node_alloc_node_id_q = IO(Input(UInt(1.W)))     
++    // val cap_cc               = IO(Input( new cap_cc_t))
++    
+   
+    switch (node_alloc_state_q)
+     {
+@@ -562,7 +562,9 @@ class crevokeModule(implicit p: Parameters) extends XSModule {
+ 
+    val rs1_cc = Reg(new cap_cc_t)
+    val rs1_c  = Reg(new cap_fat_t) 
++   val rs2_cc = Reg(new cap_cc_t) 
+    val cap_uncompress_cap = Module(new cap_uncompress)
++   val cap_compress_cap   = Module(new cap_compress)
+ 
+    rs1_cc.renode_id  := Cat(src.cap_a(30,0))//31
+    rs1_cc.meta.ty    := Cat(src.cap_a(33,31)) //6
+@@ -616,38 +618,74 @@ class crevokeModule(implicit p: Parameters) extends XSModule {
+   rs1_c.bounds.base   := src.operand_a
+   rs1_c.bounds.top    := src.operand_b
+ 
+-  // printf("revoke rs1_cc.meta.ty=%b,  %b\n",rs1_cc.meta.ty,src.tag_a)
+ 
+-  // if ((src.tag_a==0.U) && (rs1_cc.meta.ty == cap_type_t.CAP_TYPE_REVOKE))
++
++  printf("revoke origin type is=%b , %b\n",rs1_cc.meta.ty , src.tag_a)
++
++//  if ((src.tag_a==0.U) && (rs1_cc.meta.ty == cap_type_t.CAP_TYPE_REVOKE))
+   when ((src.tag_a===0.U) && (rs1_cc.meta.ty === cap_type_t.CAP_TYPE_REVOKE))
+     {
+-    rs1_cc.meta.ty := cap_type_t.CAP_TYPE_LINEAR
++
++    cap_compress_cap.cap_fat.meta.ty:=cap_type_t.CAP_TYPE_LINEAR
+     // rs1_result_o = '{ cap: 128'(rs1_cc), tag: 1'b1, valid: 1'b1 };
+-      
+-    crevoke.cap  := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm,rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor )
++
++  //  rs1_cc = capstone::cap_compress(rs1_c);
++   cap_compress_cap.cap_fat.bounds.base  :=rs1_c.bounds.base
++   cap_compress_cap.cap_fat.bounds.top   :=rs1_c.bounds.top  
++   cap_compress_cap.cap_fat.bounds.cursor:=rs1_c.bounds.cursor
++   cap_compress_cap.cap_fat.meta.perm   :=rs1_c.meta.perm
++   cap_compress_cap.cap_fat.renode_id   :=rs1_c.renode_id
++   cap_compress_cap.cap_fat.reg_id      :=rs1_c.reg_id
++   cap_compress_cap.cap_fat.async       :=rs1_c.async
++   cap_compress_cap.cap_fat.padding     :=rs1_c.padding
++
++   rs2_cc.bounds.iE   := cap_compress_cap.cap_cc.bounds.iE
++   rs2_cc.bounds.t    := cap_compress_cap.cap_cc.bounds.t
++   rs2_cc.bounds.tE   := cap_compress_cap.cap_cc.bounds.tE  
++   rs2_cc.bounds.b    := cap_compress_cap.cap_cc.bounds.b  
++   rs2_cc.bounds.bE   := cap_compress_cap.cap_cc.bounds.bE  
++   rs2_cc.renode_id     := cap_compress_cap.cap_cc.renode_id
++   rs2_cc.meta.perm     := cap_compress_cap.cap_cc.meta.perm
++   rs2_cc.meta.ty       := cap_compress_cap.cap_cc.meta.ty
++
++
++
++  // rd_result_o = '{cap: 128'(rs1_cc), tag: '1, valid: '1};    
++    crevoke.cap  := Cat(rs2_cc.renode_id,rs2_cc.meta.ty,rs2_cc.meta.perm,rs2_cc.bounds.iE , rs2_cc.bounds.t , rs2_cc.bounds.tE , rs2_cc.bounds.b , rs2_cc.bounds.bE ,rs2_cc.bounds.cursor )
+     crevoke.tag  := 1.U(1.W)
+     crevoke.valid:= 1.U(1.W) 
+ 
+     // send_node_query(rs1_cc.renode_id, 1'b0);
+     // send_node_mut(rs1_cc.renode_id, NODE_REVOKE);
+-     printf("revoke if true")
+-  
+-     
++     printf("revokation is done correctly\n")
++     printf( "type convert to %b\n",rs2_cc.meta.ty)
+      }
+-    //  else
+-  .otherwise
++  //  else
++   .otherwise
+      {
++
++     cap_compress_cap.cap_fat.bounds.base  :=0.U
++     cap_compress_cap.cap_fat.bounds.top   :=0.U 
++     cap_compress_cap.cap_fat.bounds.cursor:=0.U
++     cap_compress_cap.cap_fat.meta.ty      :=0.U
++     cap_compress_cap.cap_fat.meta.perm   :=0.U
++     cap_compress_cap.cap_fat.renode_id   :=0.U
++     cap_compress_cap.cap_fat.reg_id      :=0.U
++     cap_compress_cap.cap_fat.async       :=0.U
++     cap_compress_cap.cap_fat.padding     :=0.U
++
++      printf("revokation exception\n")
++
+       crevoke.cap  := 0.U 
+       crevoke.tag  := 0.U(1.W)
+       crevoke.valid:= 0.U(1.W)  
+     //   // ex_o.valid = 1'b1;
+      }
+- 
+-  printf("in revoke ins, type convert from %b to %b\n",rs1_cc.meta.ty,rs1_cc.meta.ty)
+-   
+-  crevoke2.cap  := 0.U 
+-  crevoke2.tag  := 0.U(1.W)
+-  crevoke2.valid:= 0.U(1.W)  
++       
++
++   crevoke2.cap  := 0.U 
++   crevoke2.tag  := 0.U(1.W)
++   crevoke2.valid:= 0.U(1.W)  
+ 
+   }
+ 
+-- 
+2.34.1
+

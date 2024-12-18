@@ -1,0 +1,25 @@
+diff --git a/bbl/bbl.lds b/bbl/bbl.lds
+index 624f691..c437e6e 100644
+--- a/bbl/bbl.lds
++++ b/bbl/bbl.lds
+@@ -12,7 +12,7 @@ SECTIONS
+   /*--------------------------------------------------------------------*/
+ 
+   /* Begining of code and text segment */
+-  . = MEM_START;
++  . = MEM_START + 0xa0000;
+   _ftext = .;
+ 
+   .text :
+diff --git a/dts/noop.dtsi b/dts/noop.dtsi
+index 5bb8cde..980c6b5 100644
+--- a/dts/noop.dtsi
++++ b/dts/noop.dtsi
+@@ -26,6 +26,6 @@
+   };
+ 	L11: memory@100000000 {
+ 		device_type = "memory";
+-		reg = <0x0 0x80000000 0x0 0x80000000>;
++		reg = <0x0 0x800a0000 0x0 0x7ff60000>;
+ 	};
+ };

@@ -1,0 +1,730 @@
+From 13042a4e074e5febf1438aa7e7dbb1c2cd1f5097 Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Tue, 13 Aug 2024 06:42:17 +0800
+Subject: [PATCH 12/16] mock_node_unit is added
+
+---
+ src/main/scala/xiangshan/backend/fu/Alu.scala | 424 ++++++++++++------
+ .../xiangshan/backend/fu/mock_node_unit.scala |  83 ++--
+ src/main/scala/xiangshan/package.scala        |   6 +
+ 3 files changed, 324 insertions(+), 189 deletions(-)
+
+diff --git a/src/main/scala/xiangshan/backend/fu/Alu.scala b/src/main/scala/xiangshan/backend/fu/Alu.scala
+index b81899536..33b9b378e 100644
+--- a/src/main/scala/xiangshan/backend/fu/Alu.scala
++++ b/src/main/scala/xiangshan/backend/fu/Alu.scala
+@@ -108,6 +108,26 @@ import circt.stage.ChiselStage
+     val tag   = UInt (1.W)
+     val valid = UInt (1.W)
+    }
++
++  // a domain switch request
++  class  dom_switch_req_t extends Bundle{
++    def is_full   = UInt (1.W)
++    def is_return = UInt (1.W) // if this is return, ra is overwritten
++    def dom_base  = UInt (XLEN.W)
++    def out_dom_base = UInt (XLEN.W)
++    def pc_out    = UInt (XLEN.W) // pc to swap out
++    def trans_id  = UInt (TRANS_ID_BITS.W)
++  } 
++
++  class  capstone_mode_switch_t extends Bundle{
++    def cap0    = clen_t
++    def cap1    = clen_t
++    def pc_cap  = clen_t
++    def valid   = UInt (1.W)
++  }
++
++
++
+ //////////////////////////////////////node/////////////////
+  class node_mut_t extends Bundle{
+    val node_id = cap_renode_id_t 
+@@ -129,108 +149,151 @@ class node_query_resp_t extends Bundle{
+   val r_valid     = UInt (1.W)  // is this node valid?
+   } 
+ 
++    class send_node_query_bundle extends Bundle
++   {
++    val revnode_id                 = Input(cap_renode_id_t)
++    val node_query_sent_q          = Input(UInt(1.W))
++    val node_query_ready_i         = Input(UInt(1.W))
++    val node_query_resp_valid_i    = Input(UInt(1.W)) 
++    val node_query_resp_received_q = Input(UInt(1.W)) 
++    val synchronous                = Input(UInt(1.W))
++    val node_query_resp_i          = Input(new node_query_resp_t)
++
++    val node_query_sent_d          = Output(UInt(1.W))
++    val node_query_valid_o         = Output(UInt(1.W)) 
++    val rd_result_o                = Output(new cap_result_t )  
++    val node_query_o               = Output(new node_query_t )     
++    val node_query_resp_result_d   = Output(UInt(1.W))
++    val node_query_resp_received_d = Output(UInt(1.W))
++    val node_query_resp_result_q   = Output(UInt(1.W))
++   }
++
+   class send_node_query extends Module
+    {
+-    val revnode_id                 = IO(Input(cap_renode_id_t))
+-    val node_query_sent_q          = IO(Input(UInt(1.W)))
+-    val node_query_ready_i         = IO(Input(UInt(1.W)))
+-    val node_query_resp_valid_i    = IO(Input(UInt(1.W))) 
+-    val node_query_resp_received_q = IO(Input(UInt(1.W))) 
+-    val synchronous                = IO(Input(UInt(1.W)))
+-    val node_query_resp_i          = IO(Input(new node_query_resp_t))
+-
+-    val node_query_sent_d          = IO(Output(UInt(1.W))) 
+-    val node_query_valid_o         = IO(Output(UInt(1.W))) 
+-    val rd_result_o                = IO(Output(new cap_result_t ))  
+-    val node_query_o               = IO(Output(new node_query_t ))     
+-    val node_query_resp_result_d   = IO(Output(UInt(1.W)))
+-    val node_query_resp_received_d = IO(Output(UInt(1.W)))
+-    val node_query_resp_result_q = IO(Output(UInt(1.W)))
+-
+-     node_query_sent_d := node_query_sent_q  
+-
+-    if (node_query_sent_q== 0.U) 
++    val ins  =IO(new send_node_query_bundle )
++
++    // val revnode_id                 = IO(Input(cap_renode_id_t))
++    // val node_query_sent_q          = IO(Input(UInt(1.W)))
++    // val node_query_ready_i         = IO(Input(UInt(1.W)))
++    // val node_query_resp_valid_i    = IO(Input(UInt(1.W))) 
++    // val node_query_resp_received_q = IO(Input(UInt(1.W))) 
++    // val synchronous                = IO(Input(UInt(1.W)))
++    // val node_query_resp_i          = IO(Input(new node_query_resp_t))
++
++    // val node_query_sent_d          = IO(Output(UInt(1.W))) 
++    // val node_query_valid_o         = IO(Output(UInt(1.W))) 
++    // val rd_result_o                = IO(Output(new cap_result_t ))  
++    // val node_query_o               = IO(Output(new node_query_t ))     
++    // val node_query_resp_result_d   = IO(Output(UInt(1.W)))
++    // val node_query_resp_received_d = IO(Output(UInt(1.W)))
++    // val node_query_resp_result_q = IO(Output(UInt(1.W)))
++  // val ins  =IO(new send_node_query_bundle )
++
++    ins.node_query_sent_d := ins.node_query_sent_q  
++
++    when (ins.node_query_sent_q=== 0.U) 
+       {
+-      if (node_query_ready_i== 1.U) 
++      when (ins.node_query_ready_i=== 1.U) 
+         {
+-        node_query_valid_o   := 1.U(1.W)
+-        node_query_o.node_id := revnode_id
+-        node_query_o.synchronous := synchronous
+-        node_query_o.trans_id := 0.U
++        ins.node_query_valid_o   := 1.U(1.W)
++        ins.node_query_o.node_id := ins.revnode_id
++        ins.node_query_o.synchronous := ins.synchronous
++        ins.node_query_o.trans_id := 0.U
+ 
+-        node_query_sent_d := 1.U(1.W)
++        ins.node_query_sent_d := 1.U(1.W)
+         
+-        if(synchronous==1.U) 
++        when(ins.synchronous===1.U) 
+         {
+-          node_query_resp_received_d := 1.U(1.W)
++          ins.node_query_resp_received_d := 1.U(1.W)
+           // wait_for_this_cycle(); // for a synchronous query, we still need to wait for the result
+         }
+        } 
+-     else 
++     .otherwise
+       {
+         // wait_for_this_cycle();
+       }
+      } 
+-     else if (synchronous==1.U) 
++     when (ins.synchronous===1.U) 
+       {
+-      if (node_query_resp_received_q==0.U) 
++      when (ins.node_query_resp_received_q===0.U) 
+         {
+-        if ((node_query_resp_valid_i==1.U) && (node_query_resp_i.synchronous==1.U)) 
++        when ((ins.node_query_resp_valid_i===1.U) && (ins.node_query_resp_i.synchronous===1.U)) 
+           {
+-          node_query_resp_received_d := 1.U(1.W)
+-          node_query_resp_result_d   := node_query_resp_i.r_valid
+-          rd_result_o.cap            := (node_query_resp_i.r_valid)
++          ins.node_query_resp_received_d := 1.U(1.W)
++          ins.node_query_resp_result_d   := ins.node_query_resp_i.r_valid
++          ins.rd_result_o.cap            := (ins.node_query_resp_i.r_valid)
+           }
+-          else
++          .otherwise
+           { 
+           // wait_for_this_cycle();
+           }
+         }      
+-        else 
++        .otherwise
+         {
+-        rd_result_o.cap := node_query_resp_result_q
++        ins.rd_result_o.cap := ins.node_query_resp_result_q
+         }
+       }
+     }
+-   
++
++   class send_node_mut_bundle extends Bundle 
++   {
++    // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
++    val revnode_id       = Input( cap_renode_id_t)
++    val node_alloc_node_id_cur = Input( cap_renode_id_t)
++    val mut_ty           = Input(UInt(4.W))
++    val have_alloc       = Input(UInt(1.W))
++    val node_mut_valid_o = Output(UInt(1.W))
++    val node_mut_o       = Output(new node_mut_t)   
++   }  
++
+    class send_node_mut extends Module 
+    {
++     val ins  =IO(new send_node_mut_bundle )
++
+     // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
+-    val revnode_id       = IO(Input( cap_renode_id_t))
+-    val node_alloc_node_id_cur = IO(Input( cap_renode_id_t))
+-    val mut_ty           = IO(Input(UInt(4.W)))
+-    val have_alloc       = IO(Input(UInt(1.W)))
+-    val node_mut_valid_o = IO(Output(UInt(1.W)))
+-    val node_mut_o       = IO(Output(new node_mut_t))
++    // val revnode_id       = IO(Input( cap_renode_id_t))
++    // val node_alloc_node_id_cur = IO(Input( cap_renode_id_t))
++    // val mut_ty           = IO(Input(UInt(4.W)))
++    // val have_alloc       = IO(Input(UInt(1.W)))
++    // val node_mut_valid_o = IO(Output(UInt(1.W)))
++    // val node_mut_o       = IO(Output(new node_mut_t))
+      
+-     node_mut_valid_o  := 1.U
+-     node_mut_o.node_id:= revnode_id
+-     node_mut_o.node_op:= mut_ty
+-     node_mut_o.alloc  := have_alloc
+-     node_mut_o.new_node_id:= node_alloc_node_id_cur
++     ins.node_mut_valid_o  := 1.U
++     ins.node_mut_o.node_id:= ins.revnode_id
++     ins.node_mut_o.node_op:= ins.mut_ty
++     ins.node_mut_o.alloc  := ins.have_alloc
++     ins.node_mut_o.new_node_id:= ins.node_alloc_node_id_cur
+    }
+ 
+-  class send_node_alloc extends Module 
++  class send_node_alloc_bundle extends Bundle 
+   {
+     // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
+-    val node_alloc_state_d   = IO(Output( UInt(4.W)))//IO(Output(new node_mut_type_t))
++    val node_alloc_state_d   = Output( UInt(4.W))//IO(Output(new node_mut_type_t))
+     // val node_mut_valid_o     = IO(Output(UInt(1.W)))
+     // val node_alloc_node_id_d = IO(Output(new node_mut_t))  
+-    val node_alloc_valid_o   = IO(Output(UInt(1.W))) 
+-    val node_alloc_ready_i   = IO(Input(UInt(1.W)))
+-    val node_alloc_state_q   = IO(Input(UInt(4.W)))
++    val node_alloc_valid_o   = Output(UInt(1.W)) 
++    val node_alloc_ready_i   = Input(UInt(1.W))
++    val node_alloc_state_q   = Input(UInt(4.W))
+     // val node_alloc_node_id_q = IO(Input(UInt(1.W)))     
+     // val cap_cc               = IO(Input( new cap_cc_t))
+-    
++
++ 
++  }
++
++  class send_node_alloc extends Module 
++  {
++    val ins  =IO(new send_node_alloc_bundle )
++
++    // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
+   
+-   switch (node_alloc_state_q)
++   switch (ins.node_alloc_state_q)
+     {
+       is (mut_t.NODE_ALLOC_IDLE) 
+       {
+-        if (node_alloc_ready_i==1.U) 
++        when (ins.node_alloc_ready_i===1.U) 
+           {
+-          node_alloc_valid_o := 1.U
+-          node_alloc_state_d := mut_t.NODE_ALLOC_SENT
++          ins.node_alloc_valid_o := 1.U
++          ins.node_alloc_state_d := mut_t.NODE_ALLOC_SENT
+           }
+       }
+       is (mut_t.NODE_ALLOC_SENT) 
+@@ -244,6 +307,28 @@ class node_query_resp_t extends Bundle{
+     }
+   }
+ 
++ class wait_for_this_cycle_bundle extends Bundle 
++  {
++    val capstone_valid_o    = Output(UInt(1.W))
++    val cms_result_o        = Output(new capstone_mode_switch_t) 
++    val dom_switch_valid_o  = Output(UInt(1.W))
++    val valid_last_n        = Output(UInt(1.W))
++    val pc_last_n           = Output(UInt(VLEN.W))     
++    val fu_data_last_n      = Output(new fu_data_t)
++    val pc_cur              = Input(UInt(VLEN.W)) 
++    val fu_data_cur         = Input(new fu_data_t)
++  }
++class wait_for_this_cycle extends Module 
++{
++  val ins  =IO(new wait_for_this_cycle_bundle )
++  capstone_valid_o := 0.U
++  cms_result_o     := 0.U
++  dom_switch_valid_o := 0.U
++  valid_last_n      := 0.U
++  pc_last_n         := pc_cur
++  fu_data_last_n    := fu_data_cur
++}    
++  
+ ////////////////////////////////////////////////////////capstone class end //////////////////////////////////
+ 
+ /////////////////////////compression/decompression//////////////
+@@ -559,6 +644,15 @@ class crevokeModule(implicit p: Parameters) extends XSModule {
+   val crevoke   = IO(Output(new cap_result_t ))
+   val crevoke2  = IO(Output(new cap_result_t ))
+   // io.rd_result_o.tag:= 1.U(1.W)
++  //node port
++   val send_node_query_ins  =IO(new send_node_query_bundle())
++   val send_node_mut_ins    =IO(new send_node_mut_bundle())
++
++   val send_node_query_c    = Module(new send_node_query)
++   val send_node_mut_c      = Module(new send_node_mut)
++
++   send_node_query_ins<>send_node_query_c.ins
++   send_node_mut_ins<>send_node_mut_c.ins
+ 
+    val rs1_cc = Reg(new cap_cc_t)
+    val rs1_c  = Reg(new cap_fat_t) 
+@@ -656,7 +750,13 @@ class crevokeModule(implicit p: Parameters) extends XSModule {
+     crevoke.valid:= 1.U(1.W) 
+ 
+     // send_node_query(rs1_cc.renode_id, 1'b0);
+-    // send_node_mut(rs1_cc.renode_id, NODE_REVOKE);
++    // send_node_mut(rs1_cc.renode_id, NODE_REVOKE)
++    send_node_query_c.ins.revnode_id:=rs2_cc.renode_id
++    send_node_query_c.ins.synchronous:=0.U
++
++    send_node_mut_c.ins.revnode_id:=rs2_cc.renode_id
++    send_node_mut_c.ins.mut_ty:=node_mut_type_t.NODE_REVOKE
++
+      printf("revokation is done correctly\n")
+      printf( "type convert to %b\n",rs2_cc.meta.ty)
+      }
+@@ -2877,8 +2977,36 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+   
+ }
+ 
+-
+-
++ class CapExeModule_bundle extends Bundle {
++    val flush_i =Input( UInt (1.W))
++    val pc_i    =Input( UInt (VLEN.W))               // PC of instruction
++
++    val  ex_o               =Output ( new exception_t )
++    val  cms_result_o       =Output ( new capstone_mode_switch_t )
++    val capstone_valid_i    =Input  ( UInt (1.W))     // FU validity signal
++    val capstone_valid_o    =Output ( UInt (1.W))      // Result validity signal to issue
++    val capstone_ready_o    =Output ( UInt (1.W))                    
++    val capstone_trans_id_o =Output ( UInt (TRANS_ID_BITS.W)) 
++    val cih_i               =Input  ( UInt (128.W)) //clen_t          
++    // domain switcher
++    val dom_switch_valid_o = Output ( UInt (1.W))                   
++    val dom_switch_req_    = Output ( new dom_switch_req_t)          
++    // node unit interface
++    // query
++    val node_query_valid_o  = Output ( UInt (1.W))  
++    val node_query_ready_i  = Input  ( UInt (1.W))  
++    val node_query_o        = Output ( new node_query_t) 
++    val node_query_resp_valid_i= Input ( UInt (1.W)) 
++    val node_query_resp_i   = Input  ( new node_query_resp_t) 
++    // allocation
++    val node_alloc_valid_o = Output ( UInt (1.W))  
++    val node_alloc_ready_i = Input  ( UInt (1.W))  
++    val node_alloc_resp_valid_i = Input  ( UInt (1.W))  
++    val node_alloc_node_id_ic   = cap_revnode_id_t 
++    // mutation
++    val node_mut_valid_o = Output ( UInt (1.W))  
++    val node_mut_o       = Output ( new node_mut_t )
++    }
+ //Capstone//mlabaf
+  class CapExeModule(implicit p: Parameters) extends XSModule {
+ //  class CapExeModule extends Module {
+@@ -2897,8 +3025,100 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+   val rd        =Input( UInt (5.W))
+   val rs1       =Input( UInt (5.W))
+   val rs2       =Input( UInt (5.W))  
++//////////////////////////////////////////////////
+ 
+- })
++ })  
++
++ val CapExe_ins  =IO(new CapExeModule_bundle())
++//////////////////needed node value///////////////
++    val node_alloc_state_d   = (UInt(4.W))
++    val node_alloc_valid_o   = (UInt(1.W)) 
++    val node_alloc_ready_i   = (UInt(1.W))
++    val node_alloc_state_q   = RegInit(0.U(4.W))
++ 
++
++    val revnode_id       = ( cap_renode_id_t)
++    val node_alloc_node_id_cur = ( cap_renode_id_t)
++    val mut_ty           = (UInt(4.W))
++    val have_alloc       = (UInt(1.W))
++    val node_mut_valid_o = (UInt(1.W))
++    val node_mut_o       = (new node_mut_t)
++   
++    val node_query_sent_q          = RegInit(0.U(1.W))
++    val node_query_ready_i         = (UInt(1.W))
++    val node_query_resp_valid_i    = (UInt(1.W)) 
++    val node_query_resp_received_q = RegInit(0.U(1.W)) 
++    val synchronous                = (UInt(1.W))
++    val node_query_resp_i          = (new node_query_resp_t)
++
++    val node_query_sent_d          = (UInt(1.W))
++    val node_query_valid_o         = (UInt(1.W)) 
++    val rd_result_o                = (new cap_result_t )  
++    val node_query_o               = RegInit(0.U.asTypeOf(new node_query_t ))     
++    val node_query_resp_result_d   = RegInit(0.U(1.W))
++    val node_query_resp_received_d = RegInit(0.U(1.W))
++    val node_query_resp_result_q   = RegInit(0.U(1.W))
++
++///////////////////////end node variable/////////// 
++    // capstone_valid_o = valid_cur;
++    // dom_switch_valid_o = '0;
++    // dom_switch_req_o = '0;
++    // cms_result_o = '0;
++
++    // node_query_valid_o = '0;
++    // node_query_o.node_id = '0;
++
++    // node_alloc_state_d = NODE_ALLOC_IDLE;
++    // node_query_sent_d = '0;
++    // node_alloc_node_id_d = '0;
++    // node_alloc_valid_o = '0;
++
++    // node_mut_valid_o = '0;
++    // node_mut_o = '0;
++
++    // valid_last_n = '0;
++    // pc_last_n = '0;
++    // fu_data_last_n = '0;
++
++    // have_alloc = '0;
++
++    // ex_o.valid = '0;
++    // node_query_o.synchronous = '0;
++//////////////////////Capstone_unit variable///////////
++  val node_alloc_node_id_q, node_alloc_node_id_d = RegInit(0.U(31.W)) //cap_renode_id_t
++
++  node_alloc_node_id_cur := Mux(node_alloc_state_q === NODE_ALLOC_RECEIVED ? node_alloc_node_id_q : node_alloc_node_id_i)
++
++  val valid_last_q, valid_last_n, valid_cur = RegInit(0.U(1.W))
++  val pc_last_q, pc_last_n, pc_cur = RegInit(0.U(VLEN.W))
++  val fu_data_last_q, fu_data_last_n, fu_data_cur = RegInit(0.U.asTypeOf(fu_data_t))
++
++  valid_cur := valid_last_q | capstone_valid_i
++  pc_cur := Mux(valid_last_q ? pc_last_q : pc_i)
++  fu_data_cur := Mux(valid_last_q ? fu_data_last_q : fu_data_i)
++
++  capstone_ready_o := ~valid_last_q
++
++  val have_alloc RegInit(0.U(1.W)) 
++
++  node_query_o.trans_id := fu_data_cur.trans_id
++
++  capstone_trans_id_o := fu_data_cur.trans_id
++
++  node_alloc_state_q := node_alloc_state_d
++  node_query_sent_q := node_query_sent_d
++  node_query_resp_received_q := node_query_resp_received_d
++  node_query_resp_result_q := node_query_resp_result_d
++  node_alloc_node_id_q := node_alloc_node_id_d
++  valid_last_q := valid_last_n
++  pc_last_q := pc_last_n
++  fu_data_last_q := fu_data_last_n
++
++  capstone_valid_o := valid_cur
++/////////////////////////////////////////////////////////////////////
++
++
++ val capRes  = IO(Output( new cap_result_t ))
+   // val src  = IO(Input(new fu_data_t))
+   val src  = Wire(new fu_data_t)
+   src.operand_a := io.operand_a 
+@@ -2915,14 +3135,12 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+   src.rs1   := io.rs1   
+   src.rs2   := io.rs2    
+ 
+-
+-  val capRes  = IO(Output(new cap_result_t ))
+-
+-
+-
+   val crevokeModule = Module(new crevokeModule)
+   val crevoke  = crevokeModule.crevoke
+   crevokeModule.src := src
++  crevokeModule.send_node_query_ins  <>send_node_query_ins
++  crevokeModule.send_node_mut_ins    <>send_node_mut_ins
++  crevokeModule.send_node_alloc_ins  <>send_node_alloc_ins
+ 
+   val cshrinkModule = Module(new cshrinkModule)
+   // cshrinkModule.io.src :=  src1(31, 0)
+@@ -3071,38 +3289,8 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+     val pred_taken, isBranch = Input(Bool())
+     val result = Output(UInt(XLEN.W))
+     val taken, mispredict = Output(Bool())
+-    //val fu_data_curt = 0.U.asTypeOf(Input(new MyBundle))
+-    // val fu_data_curt  = Input(new fu_data_t)
+-  //   val fu_data_curt  = Wire(Input(new fu_data_t))
+-     // val bundle = uint.asTypeOf(new MyBundle)
+-
+-    //val fu_data_curt  = Input(new typ)
+-    //  val rd_result_ot  = Output(new cap_result_t )
+-    //   val rd_result_ot  = Wire(Output(new cap_result_t ))
+-      // val rd_result_ot  = Reg(Output(new cap_result_t ))
+-    //  val rd_result_ot  = Output(new cap_result_t )
+-    // val rd_result_ot  = Output(typ )
+-    //val rd_result_ot = 0.U.asTypeOf(chiselTypeOf(Output(new cap_result_t)))
+-
+   })   
+-    //val rd_result_ot =Wire( IO(Output(new cap_result_t)) )
+-    //val uint = rd_result_ot.asUInt 
+-
+-//     val rd_result_ot = 0.U.asTypeOf(IO(Output(new cap_result_t)))
+-    // val rd_result_ot = 0.U.asTypeOf(IO(Output(typ)))
+-    // rd_result_ot:= 0.U.asTypeOf(chiselTypeOf(rd_result_ot))
+-   //val rd_result_ot = IO(Output(cap_result_t))
+-  //  rd_result_ot := 0.U.asTypeOf(typ)
+-   // rd_result_ot := 0.U.asTypeOf(typ)
+-   //val rd_result_ot  = IO(Output(new cap_result_t))
+ 
+-   //val fu_data_curt  = IO(Input(new fu_data_t))
+-   //val fu_data_curtt = fu_data_curt.asUInt
+-
+-  //val rd_result_ott = 0.U.asTypeOf(rd_result_ot)
+-  //val rd_result_ott = rd_result_ot.asUInt
+-   // fu_data_curt := 0.U.asTypeOf(fu_data_t)
+-   // fu_data_curt := 0.U.asTypeOf(chiselTypeOf(fu_data_t))
+ 
+   val (src1, src2, func) = (io.src(0), io.src(1), io.func)
+ 
+@@ -3273,43 +3461,6 @@ class capResultSelect(implicit p: Parameters) extends XSModule {
+   wordResSel.io.rorw := rorw
+   val wordRes = wordResSel.io.wordRes
+ 
+-  // Result capstone//mlabaf//capstone
+-  // val capResSel = Module(new capResultSelect)
+-  // capResSel.io.func := func(6, 0)
+-  // capResSel.io.crevoke  := crevoke
+-  // capResSel.io.cshrink  := cshrink
+-  // capResSel.io.ctighten  := ctighten
+-  // capResSel.io.cdelin  := cdelin
+-  // capResSel.io.clcc  := clcc
+-  // capResSel.io.cscc := cscc
+-  // capResSel.io.csplit := csplit
+-  // capResSel.io.cseal := cseal
+-  // capResSel.io.cmrev := cmrev
+-  // capResSel.io.cinit  := cinit
+-  // capResSel.io.cmovc  := cmovc
+-  // capResSel.io.cdrop  := cdrop
+-  // capResSel.io.ccincoffset  := ccincoffset
+-  // capResSel.io.ccall  := ccall
+-  // capResSel.io.creturn := creturn
+-  // capResSel.io.ccjalr := ccjalr
+-  // capResSel.io.ccbnz := ccbnz
+-  // capResSel.io.cccsrrw := cccsrrw
+-  // capResSel.io.ccapenter  := ccapenter
+-  // capResSel.io.ccincoffsetim  := ccincoffsetim
+-  // capResSel.io.cshrinkto  := cshrinkto
+-  // capResSel.io.ccreate := ccreate
+-  // capResSel.io.ctype := ctype
+-  // capResSel.io.cnode := cnode
+-  // capResSel.io.cperm := cperm
+-  // capResSel.io.cbound  := cbound
+-  // capResSel.io.cprint  := cprint
+-  // capResSel.io.cregprint := cregprint
+-  // capResSel.io.getrand := getrand
+-  // capResSel.io.tagset := tagset
+-  // capResSel.io.tagget := tagget
+-  
+-
+-
+   val aluResSel = Module(new AluResSel)
+   // aluResSel.io.func := func(7, 4)
+   aluResSel.io.func := func(6, 4)
+@@ -3469,9 +3620,6 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+    rs1_cc.meta.perm:= cap_compress_cap.cap_cc.meta.perm
+    rs1_cc.renode_id:= cap_compress_cap.cap_cc.renode_id
+ 
+-   printf("cap_compress function in revoke")    
+-  //  XSDebug("data is in compress=  -%b -%b -%b -\n",rs1_cc.renode_id, rs1_cc.meta.ty, rs1_cc.meta.perm)
+-
+    cap_uncompress_cap.cap_cc.bounds.iE:=rs1_cc.bounds.iE
+    cap_uncompress_cap.cap_cc.bounds.t:=rs1_cc.bounds.t
+    cap_uncompress_cap.cap_cc.bounds.tE:=rs1_cc.bounds.tE
+diff --git a/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala b/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
+index a43a94a05..f339aa47f 100644
+--- a/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
++++ b/src/main/scala/xiangshan/backend/fu/mock_node_unit.scala
+@@ -284,12 +284,12 @@ class do_mrev  extends Module
+     //query
+ 
+      val ALLOC_BUFFER_N = 4 //ToDo localparam CVA6ConfigNrScoreboardEntries = 4;
+-     val query_last_q          = Vec(3,(new node_query_t))
+-     val valid_query_last_q    = Vec(3,UInt(1.W))
++     val query_last_q          = RegInit(VecInit(Seq.fill(3)(0.U.asTypeOf(new node_query_t))))//Vec(3,(new node_query_t))
++     val valid_query_last_q    = RegInit(VecInit(Seq.fill(3)(0.U(1.W))))//Vec(3,UInt(1.W))
+     // val REVNODE_BUF_N = 1024
+-     val node_pool_q, node_pool_n = Vec(REVNODE_BUF_N,new revnode_t)
+-     val uncommitted_allocated_n_q, uncommitted_allocated_n_n = Vec(32,UInt(1.W))
+-     val free_list_q, free_list_n = cap_revnode_id_t
++     val node_pool_q, node_pool_n =RegInit(VecInit(Seq.fill(REVNODE_BUF_N)(0.U.asTypeOf(new revnode_t))))// Vec(REVNODE_BUF_N,new revnode_t)
++     val uncommitted_allocated_n_q, uncommitted_allocated_n_n = RegInit(VecInit(Seq.fill(32)(0.U(1.W))))//Vec(32,UInt(1.W))
++     val free_list_q, free_list_n = RegInit(0.U(32.W))//cap_revnode_id_t
+      val REVNODE_INIT = Wire(new revnode_t)
+     
+     REVNODE_INIT.prev   := cap_revnode_id_t//CAP_REVNODE_ID_NULL
+@@ -344,9 +344,10 @@ class do_mrev  extends Module
+ 
+   // allocation
+ 
+-  val uncommitted_alloc_buffer_q, uncommitted_alloc_buffer_d,alloc_buffer_q, alloc_buffer_d= Vec(ALLOC_BUFFER_N, cap_revnode_id_t) 
+-  val alloc_valid_last_q = UInt(1.W)
+-  val alloc_node_id_q, alloc_node_id_n = cap_revnode_id_t
++
++  val uncommitted_alloc_buffer_q, uncommitted_alloc_buffer_d,alloc_buffer_q, alloc_buffer_d= RegInit(VecInit(Seq.fill(ALLOC_BUFFER_N)("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))) //Vec(ALLOC_BUFFER_N, cap_revnode_id_t) //?
++  val alloc_valid_last_q = RegInit(0.U(1.W))
++  val alloc_node_id_q, alloc_node_id_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
+   io.alloc_ready_o := 1.U
+   io.alloc_valid_o := alloc_valid_last_q
+   io.alloc_node_id_o := alloc_node_id_q
+@@ -358,7 +359,7 @@ class do_mrev  extends Module
+   // committed node allocation state
+   val allocated_n_q, allocated_n_n = Vec(32,UInt(1.W))
+   // all inflight states
+-  val uncommitted_free_list_q, uncommitted_free_list_n = cap_revnode_id_t
++  val uncommitted_free_list_q, uncommitted_free_list_n = RegInit(("b1111111111111111111111111111111".U.asTypeOf(cap_revnode_id_t)))//cap_revnode_id_t
+ 
+   // single-cycle non-synthesisable implementation
+ 
+@@ -444,12 +445,8 @@ class do_mrev  extends Module
+        do_create_f.io.REVNODE_INIT   := REVNODE_INIT              
+       }
+      }
+-  
+-
+-  
+    }
+ 
+-
+     // always_comb begin : uncommitted_allocation
+     uncommitted_allocated_n_n := uncommitted_allocated_n_q
+     uncommitted_free_list_n := uncommitted_free_list_q
+@@ -465,17 +462,17 @@ class do_mrev  extends Module
+      alloc_node_id_n.io.uncommitted_free_list_q    := uncommitted_free_list_q
+      alloc_node_id_n.io.uncommitted_allocated_n_q  := uncommitted_allocated_n_q
+      alloc_node_id_n.io.node_pool_q    := node_pool_q
+-      uncommitted_free_list_n    := Output (cap_revnode_id_t)
+-      uncommitted_allocated_n_n  := Output (cap_revnode_id_t)
++     uncommitted_free_list_n    := Output (cap_revnode_id_t)
++     uncommitted_allocated_n_n  := Output (cap_revnode_id_t)
+ 
+       // $display("Uncommitted allocation %d", alloc_node_id_n);
+       // for (int unsigned i = 0; i < ALLOC_BUFFER_N - 1; i ++) begin
+-        uncommitted_alloc_buffer_d(1) := uncommitted_alloc_buffer_q(0)
+-        uncommitted_alloc_buffer_d(2) := uncommitted_alloc_buffer_q(1)
+-        uncommitted_alloc_buffer_d(3) := uncommitted_alloc_buffer_q(2)
++      uncommitted_alloc_buffer_d(1) := uncommitted_alloc_buffer_q(0)
++      uncommitted_alloc_buffer_d(2) := uncommitted_alloc_buffer_q(1)
++      uncommitted_alloc_buffer_d(3) := uncommitted_alloc_buffer_q(2)
+       
+-        uncommitted_alloc_buffer_d(0) := alloc_node_id_n.io.uncommitted_allocated_n_n//?
+-        uncommitted_free_list_n := alloc_node_id_n.io.uncommitted_free_list_n//?
++      uncommitted_alloc_buffer_d(0) := alloc_node_id_n.io.uncommitted_allocated_n_n//?
++      uncommitted_free_list_n := alloc_node_id_n.io.uncommitted_free_list_n//?
+     }
+ 
+     when (io.flush_i===1.U)
+@@ -486,39 +483,23 @@ class do_mrev  extends Module
+     }
+ 
+ 
+-      // always_ff @(posedge clk_i or negedge rst_ni) begin
+-    // if (~rst_ni) begin
+-      // query_last_q <= '0;
+-      // valid_query_last_q <= '0;
+-      // alloc_valid_last_q <= '0;
+-      // for (int unsigned i = 0; i < ALLOC_BUFFER_N; i ++) begin
+-      //   uncommitted_alloc_buffer_q[i] <= capstone::CAP_REVNODE_ID_NULL;
+-      //   alloc_buffer_q[i] <= capstone::CAP_REVNODE_ID_NULL;
+-      // end
+-      // alloc_node_id_q <= capstone::CAP_REVNODE_ID_NULL;
+-      // node_pool_q <= '0;
+-      // allocated_n_q <= '0;
+-      // free_list_q <= capstone::CAP_REVNODE_ID_NULL;
+-      // uncommitted_allocated_n_q <= '0;
+-      // uncommitted_free_list_q <= '0;
+-    
+-
++    // always_ff @(posedge clk_i or negedge rst_ni) begin
+ 
+-      query_last_q := io.query_i
+-      // for (int unsigned i = 0; i < 3; i ++) begin
+-      valid_query_last_q(0) := io.query_valid_i(0) & ~io.flush_i
+-      valid_query_last_q(1) := io.query_valid_i(1) & ~io.flush_i
+-      valid_query_last_q(2) := io.query_valid_i(2) & ~io.flush_i
++    query_last_q := io.query_i
++    // for (int unsigned i = 0; i < 3; i ++) begin
++    valid_query_last_q(0) := io.query_valid_i(0) & ~io.flush_i
++    valid_query_last_q(1) := io.query_valid_i(1) & ~io.flush_i
++    valid_query_last_q(2) := io.query_valid_i(2) & ~io.flush_i
+       
+-      alloc_valid_last_q := io.alloc_valid_i & ~io.flush_i
+-      uncommitted_alloc_buffer_q := uncommitted_alloc_buffer_d
+-      alloc_buffer_q  := alloc_buffer_d
+-      alloc_node_id_q := alloc_node_id_n
+-      node_pool_q     := node_pool_n
+-      allocated_n_q   := allocated_n_n
+-      free_list_q     := free_list_n
+-      uncommitted_allocated_n_q := uncommitted_allocated_n_n
+-      uncommitted_free_list_q   := uncommitted_free_list_n
++    alloc_valid_last_q := io.alloc_valid_i & ~io.flush_i
++    uncommitted_alloc_buffer_q := uncommitted_alloc_buffer_d
++    alloc_buffer_q  := alloc_buffer_d
++    alloc_node_id_q := alloc_node_id_n
++    node_pool_q     := node_pool_n
++    allocated_n_q   := allocated_n_n
++    free_list_q     := free_list_n
++    uncommitted_allocated_n_q := uncommitted_allocated_n_n
++    uncommitted_free_list_q   := uncommitted_free_list_n
+   
+ 
+    }
+diff --git a/src/main/scala/xiangshan/package.scala b/src/main/scala/xiangshan/package.scala
+index ed80b97da..6904c2d71 100644
+--- a/src/main/scala/xiangshan/package.scala
++++ b/src/main/scala/xiangshan/package.scala
+@@ -58,6 +58,7 @@ def cap_revnode_id_t = UInt(31.W)//Vec(31, UInt (1.W))
+ // def CAP_REVNODE_ID_NULL cap_revnode_id_t  = "b1111111111111111111111111111111".U
+ def CAP_REVNODE_ID_NULL  = "b1111111111111111111111111111111".U
+ 
++
+   ////////////////////////////////////////////////////////////////////cap _ node///////////////////////
+   
+    
+@@ -84,6 +85,11 @@ def CAP_REVNODE_ID_NULL  = "b1111111111111111111111111111111".U
+  //def clen_t()=vec(CLEN,Bool())
+  //def clen_t = UInt (CLEN.W)
+  def XLEN     = 64
++ def  clen_t = UInt(128.W)//[CLEN-1:0] 
++
++  def VLEN = 64//Mux((XLEN === 32) ? 32.U : 64.U)  // virtual address length
++  def PLEN = 56//Mux((XLEN === 32) ? 34.U : 56.U)  // physical address length
++
+   //mlabaf//capstone
+   object cap_type_t{
+  // class cap_type_t extends Bundle{
+-- 
+2.34.1
+

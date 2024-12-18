@@ -1,0 +1,476 @@
+From 0dc336b1f2af29eddd2f9c00da77d40427f1894d Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Sun, 4 Aug 2024 11:49:17 +0800
+Subject: [PATCH 08/16] compression stage
+
+---
+ src/main/scala/xiangshan/backend/fu/Alu.scala | 299 +++++++++---------
+ 1 file changed, 149 insertions(+), 150 deletions(-)
+
+diff --git a/src/main/scala/xiangshan/backend/fu/Alu.scala b/src/main/scala/xiangshan/backend/fu/Alu.scala
+index 17e86844e..4fe9bf050 100644
+--- a/src/main/scala/xiangshan/backend/fu/Alu.scala
++++ b/src/main/scala/xiangshan/backend/fu/Alu.scala
+@@ -128,18 +128,18 @@ class node_query_resp_t extends Bundle{
+   val trans_id    = UInt (TRANS_ID_BITS.W) 
+   val r_valid     = UInt (1.W)  // is this node valid?
+   } 
+-//////////////////////////node////////////////////
++//////////////////////////end node////////////////////
+ 
+ // Utilty functions for querying and manipulating the capabilities
+ // converts a compressed bounds into a fat bounds
+ //class cap_bounds_uncompres extends Bundle {
+-class cap_bounds_uncompres extends Module {
++class  cap_bounds_uncompres extends Module {
+   val cap_cc_bounds  =IO(Input(new cap_cc_bounds_t))
+   val cap_fat_bounds =IO(Output(new cap_fat_bounds_t))
+ 
+-  val E = Reg(UInt(6.W))
+-  val B = Reg(UInt(14.W))
+-  val T = Reg(UInt(14.W))
++  val E       = Wire(UInt(6.W))
++  val B,B1    = Wire(UInt(14.W))
++  val T,T1,T2 = Wire(UInt(14.W))
+   
+   val carry_out = Wire(UInt(1.W))
+   val msb  =  Wire(UInt(1.W))//Bool()
+@@ -150,18 +150,17 @@ class cap_bounds_uncompres extends Module {
+   printf("cap_bounds_uncompres b/=  %b -\n",cap_cc_bounds.b(10,0))
+   printf("cap_bounds_uncompres B/=  %b -\n",B)
+ 
+-  T := Cat(0.U(2.W),cap_cc_bounds.b(8,0),0.U(3.W)) 
++  T := Cat(0.U(2.W),cap_cc_bounds.t(8,0),0.U(3.W)) 
+   printf("cap_bounds_uncompres T/=  %b -\n",T)
+ 
+ //  if (cap_cc_bounds.iE===0.U )
+   if (cap_cc_bounds.iE==0.U )
+   {
+       msb := 0.U
+-    // for (i <- 0 until 5)
+-    //   E(i) := (false.B)
++
+       E := 0.U(6.W)
+-      T := Cat(T(13,3),cap_cc_bounds.tE(2,0) ) 
+-      B := Cat(B(13,3),cap_cc_bounds.bE(2,0) ) 
++      T1 := Cat(T(13,3),cap_cc_bounds.tE(2,0) ) 
++      B1 := Cat(B(13,3),cap_cc_bounds.bE(2,0) ) 
+ 
+       // carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
+       carry_out := Mux(T(11,0) < B(11,0), 1.U, 0.U)
+@@ -169,39 +168,48 @@ class cap_bounds_uncompres extends Module {
+   else
+   {
+    E := Cat(cap_cc_bounds.tE(2,0), cap_cc_bounds.bE(2,0) ) 
+-   T := Cat(T(13,3),0.U(3.W)) 
+-   B := Cat(B(13,3),0.U(3.W)) 
++   T1 := Cat(T(13,3),0.U(3.W)) 
++   B1 := Cat(B(13,3),0.U(3.W)) 
+    carry_out := Mux(T(11,3) < B(11,3), 1.U, 0.U)
+    msb := 1.U
+- }
+-    printf("cap_bounds_uncompres1 bb/=  %b -\n",bb)
+-    printf("cap_bounds_uncompres tt/=  %b -\n",tt)
++  }
++    printf("cap_bounds_uncompres1 T1/=  %b -\n",T1)
++    printf("cap_bounds_uncompres B1/=  %b -\n",B1)
+ //   T(13,12) := B(13,12) + ("b0".U, carry_out) + ("b0".U, msb)
+   //  T(13,12) := B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+   //  T(13,12) := B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+     
+-    val K = B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+-    T := Cat(K,T(11,0))
++    val K = B1(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
++    T2 := Cat(K,T1(11,0))
+ 
+-    printf("cap_bounds_uncompres2 bb/=  %b -\n",bb)
+-    printf("cap_bounds_uncompres tt/=  %b -\n",tt)
++    printf("cap_bounds_uncompres k/=  %b -\n",K)
++    printf("cap_bounds_uncompres T2/=  %b -\n",T2)
++    printf("cap_bounds_uncompres E/=  %b -\n",E)
+ 
+-    bb := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), B(13,0)) << E
+-    tt := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), T(13,0)) << E
++    bb := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), B1(13,0)) << E
++    tt := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), T2(13,0)) << E
+ 
+     printf("cap_bounds_uncompres3 bb/=  %b -\n",bb)
+     printf("cap_bounds_uncompres tt/=  %b -\n",tt)
++    printf("cap_bounds_uncompres E/=  %b -\n",E)
+ 
+   // correction
+-   A3 := Cat((cap_cc_bounds.cursor >> (E + 11.U(6.W)))(2,0))
+-
+-   T3 := Cat(T(13,11)) 
+-   B3 := Cat(B(13,11))   
+-   R := B3 - 1.U(3.W)
+-
+-  // $display("Before correction: b = %0x, t = %0x", b, t);
+-  tt := Mux((A3 >= R) && (T3 < R), tt + 1.U(6.W) << (E + 14.U(6.W)), Mux(((A3 < R) && (T3 >= R)), tt - 1.U(6.W) << (E + 14.U(6.W)), 0.U))         
+-  bb := Mux((A3 >= R) && (B3 < R), bb + 1.U(6.W) << (E + 14.U(6.W)), Mux(((A3 < R) && (B3 >= R)), bb - 1.U(6.W)<< (E + 14.U(6.W)), false.B))    
++   val k3 = (cap_cc_bounds.cursor) >> (E + 11.U(6.W))
++   A3 := k3(2,0)
++  //  A3 := Cat((cap_cc_bounds.cursor >> (E + 11.U(6.W)))(2,0))
++   T3 := T2(13,11)//Cat(T(13,11)) 
++   B3 := B1(13,11)//Cat(B(13,11))   
++   R := B3 - 1.U(3.W)    
++   printf("cap_bounds_uncompres3 cap_cc_bounds.cursor/=  %b -\n",cap_cc_bounds.cursor)
++   printf("cap_bounds_uncompres3 k3/=  %b -\n",k3)
++   printf("cap_bounds_uncompres3 A3/=  %b -\n",A3)
++    printf("cap_bounds_uncompres3 T3/=  %b -\n",T3)
++    printf("cap_bounds_uncompres B3/=  %b -\n",B3)
++    printf("cap_bounds_uncompres R/=  %b -\n",R)
++
++  // $display("Before correction: b = %0x, t = %0x", b, t);//?
++  tt := Mux((A3 >= R) && (T3 < R), tt + (1.U(64.W) << (E + 14.U(6.W))), (Mux(((A3 < R) && (T3 >= R)), tt - (1.U(64.W) << (E + 14.U(6.W))),tt ))) //?        
++  bb := Mux((A3 >= R) && (B3 < R), bb + (1.U(64.W) << (E + 14.U(6.W))), (Mux(((A3 < R) && (B3 >= R)), bb - (1.U(64.W) << (E + 14.U(6.W))),bb ))) //?   
+  
+   printf("cap_bounds_uncompres4 bb/=  %b -\n",bb)
+   printf("cap_bounds_uncompres tt/=  %b -\n",tt)
+@@ -223,11 +231,11 @@ class cap_bounds_compress extends Module {
+   // val cap_cc_bounds  =Wire(new cap_cc_bounds_t)
+   // val cap_fat_bounds =Wire(new cap_fat_bounds_t)
+ 
+-  val leading_zeros = Wire(UInt(6.W))//63.U(6.W)//?//UInt(6.W)// 0.U//"b000000".U(6.W)//VecInit.fill(6)(true.B)// //VecInit.fill(6)(true.B) //Vec(6, Bool())
++  val leading_zeros = Wire(UInt(6.W))//63.U(6.W)//??//UInt(6.W)// 0.U//"b000000".U(6.W)//VecInit.fill(6)(true.B)// //VecInit.fill(6)(true.B) //Vec(6, Bool())
+   val E  = Reg(UInt(6.W))//Wire(UInt(6.W)) //Vec(6, Bool())
+   val iE = Reg(UInt(1.W))//Wire(UInt(1.W)) //Bool()// 63
+-  val B  = Reg(UInt(14.W))//Wire(UInt(14.W)) //  Vec(14, Bool())
+-  val T  = Reg(UInt(12.W))//Wire(UInt(12.W)) //Vec(12, Bool())
++  val B1  = Wire(UInt(14.W))//Wire(UInt(14.W)) //  Vec(14, Bool())
++  val T1  = Wire(UInt(12.W))//Wire(UInt(12.W)) //Vec(12, Bool())
+   val len= Wire(UInt(64.W))
+ 
+   len:= cap_fat_bounds.top - cap_fat_bounds.base
+@@ -236,7 +244,7 @@ class cap_bounds_compress extends Module {
+ 
+   printf("cap_bounds_compress len=  %b \n",len)
+     
+-  leading_zeros := 63.U
++  leading_zeros := 63.U//?
+   printf("cap_bounds_compress leading_zeros=%b\n", leading_zeros)
+ 
+   E:= 0.U
+@@ -244,7 +252,7 @@ class cap_bounds_compress extends Module {
+ 
+    val test1=(leading_zeros > 12.U(6.W)) 
+    val test2=(len >> leading_zeros)
+-   val test3=Mux(test2(0),false.B,true.B)
++   val test3=Mux(test2(0),false.B,true.B)//?
+    val test4= test1 && test3
+ 
+   printf("cap_bounds_compress test4=%b\n", test4)
+@@ -252,22 +260,26 @@ class cap_bounds_compress extends Module {
+   // $display("leading_zeros = %0x", leading_zeros);
+  // while(((leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))) === 0.U(XLEN.W)) 
+   
+-  while(test4==true.B)
++  // while(test4==true.B)
++  while(test4==1.U)
+   {
+     leading_zeros := leading_zeros - 1.U
+     test1:=(leading_zeros > 12.U(6.W)) 
+     test2:=(len >> leading_zeros)
+     test3:=Mux(test2(0),false.B,true.B)
+     test4:= test1 && test3
++    printf("cap_bounds_compress leading_zeros2=%b,%b,%b,%b\n",test1, test2, test3,test4,leading_zeros)
+   }
++
+   E := leading_zeros - 12.U(6.W)
+   printf("cap_bounds_compress E=%b\n",E )
++  printf("cap_bounds_compress leading_zeros3=%b\n",leading_zeros )
+ 
+   if((E ==0.U(6.W))&&(len(12) == 0.U(1.W))) 
+    {
+     iE := 0.U
+-    B := cap_fat_bounds.base(13,0)
+-    T := cap_fat_bounds.top(11,0)
++    B1 := cap_fat_bounds.base(13,0)
++    T1 := cap_fat_bounds.top(11,0)
+ 
+ 
+    }     
+@@ -276,38 +288,31 @@ class cap_bounds_compress extends Module {
+     iE := 1.U(1.W)
+     val k1 = (cap_fat_bounds.base >> E)
+     val k2 = (cap_fat_bounds.top >> E)
+-    B := Cat(k1(13,3), B(2,0))
+-    T :=Cat(k2(11,3),T(2,0) )
+-
+-    // B := Cat((cap_fat_bounds.base >> E)(13,3), B(2,0))
+-    // T :=Cat((cap_fat_bounds.top >> E)(11,3),T(2,0) )
+-    // $display("B = %0x, T = %0x", B, T);
++    B1:=Cat(k1(13,3),E(2,0))
++    
+     if(((cap_fat_bounds.top >> (E + 3.U)) << (E + 3.U)) != cap_fat_bounds.top)
+-      // T(11,3) :=T(11,3) + 1.U(9.W)
+-      T:= Cat (T(11,3) + 1.U(9.W), T(2,0))
+-      // TODO: more corrections
+-      // $display("B = %0x, T = %0x", B, T);
+-      B:=Cat(B(13,3),E(2,0))
+-      T:=Cat(T(11,6),E(5,3))
+-      // B(2,0) := E(2,0)
+-      // T(2,0) := E(5,3)
+-  }
+-
+-  printf("cap_bounds_compress if B=%b\n", B)
+-  printf("cap_bounds_compress if T=%b \n", T)
++      T1:=Cat(k2(11,3)+1.U,E(5,3))     
++    else 
++      T1:=Cat(k2(11,3),E(5,3))
++
++    // TODO: more corrections
++  }
++
++  printf("cap_bounds_compress if 1B=%b\n", B1)
++  printf("cap_bounds_compress if 1T=%b \n", T1)
+   cap_cc_bounds.cursor:= cap_fat_bounds.cursor
+ 
+-  cap_cc_bounds.bE:= B(2,0)
+-  cap_cc_bounds.b:= B(13,3)
+-  cap_cc_bounds.tE:= T(2,0)
+-  cap_cc_bounds.t:= T(11,3)
++  cap_cc_bounds.bE:= B1(2,0)
++  cap_cc_bounds.b:= B1(13,3)
++  cap_cc_bounds.tE:= T1(2,0)
++  cap_cc_bounds.t:= T1(11,3)
+    cap_cc_bounds.iE:= iE
+     printf("cap_bounds_compress cursor/=  %b -\n",cap_cc_bounds.cursor)
+-    printf("cap_bounds_compress bE/=  %b -\n",cap_cc_bounds.bE)
+-    printf("dcap_bounds_compress b=  %b -\n",cap_cc_bounds.b)
+-    printf("cap_bounds_compress tE=  %b -\n",cap_cc_bounds.tE)
+-    printf("cap_bounds_compress t=  %b -\n",cap_cc_bounds.t)
+-    printf("cap_bounds_compress iE=  %b -\n",cap_cc_bounds.iE)
++    printf("cap_bounds_compress bE/=  %b\n",cap_cc_bounds.bE)
++    printf("dcap_bounds_compress b=  %b\n",cap_cc_bounds.b)
++    printf("cap_bounds_compress tE=  %b\n",cap_cc_bounds.tE)
++    printf("cap_bounds_compress t=  %b\n",cap_cc_bounds.t)
++    printf("cap_bounds_compress iE=  %b\n",cap_cc_bounds.iE)
+ 
+ }
+ 
+@@ -316,16 +321,14 @@ class cap_uncompress extends Module {
+ 
+   val cap_fat =IO(Output(new cap_fat_t))
+   val cap_cc  =IO(Input(new cap_cc_t))
+-  // val cap_fat =Wire(new cap_fat_t)
+-  // val cap_cc  =Wire(new cap_cc_t)
+-
++ 
+   val  cap_uncompress_cap = Module( new cap_bounds_uncompres)
+-    printf("cap_uncompress cursor/=  %b -\n",cap_cc_bounds.cursor)
+-    printf("cap_uncompress bE/=  %b -\n",cap_cc_bounds.bE)
+-    printf("cap_uncompress b=  %b -\n",cap_cc_bounds.b)
+-    printf("cap_uncompress tE=  %b -\n",cap_cc_bounds.tE)
+-    printf("dcap_uncompress t=  %b -\n",cap_cc_bounds.t)
+-    printf("cap_uncompress iE=  %b -\n",cap_cc_bounds.iE)
++    printf("cap_uncompress cursor/=  %b\n",cap_cc.bounds.cursor)
++    printf("cap_uncompress bE/=  %b\n",cap_cc.bounds.bE)
++    printf("cap_uncompress b=  %b\n",cap_cc.bounds.b)
++    printf("cap_uncompress tE=  %b\n",cap_cc.bounds.tE)
++    printf("dcap_uncompress t=  %b\n",cap_cc.bounds.t)
++    printf("cap_uncompress iE=  %b\n",cap_cc.bounds.iE)
+ 
+ if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+ { 
+@@ -341,87 +344,46 @@ if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type
+  }
+  else
+  {
+-
+-
+-     cap_uncompress_cap.cap_cc_bounds.iE := cap_cc.bounds.iE   
+-     cap_uncompress_cap.cap_cc_bounds.t  := cap_cc.bounds.t     
+-     cap_uncompress_cap.cap_cc_bounds.tE := cap_cc.bounds.tE     
+-     cap_uncompress_cap.cap_cc_bounds.b  := cap_cc.bounds.b     
+-     cap_uncompress_cap.cap_cc_bounds.bE := cap_cc.bounds.bE     
+-     cap_uncompress_cap.cap_cc_bounds.cursor := cap_cc.bounds.cursor
+-
+-     cap_fat.bounds.top    := cap_uncompress_cap.cap_fat_bounds.top
+-     cap_fat.bounds.base   := cap_uncompress_cap.cap_fat_bounds.base
+-     cap_fat.bounds.cursor := cap_uncompress_cap.cap_fat_bounds.cursor
+-
+-  
+-    // cap_uncompress_cap.cap_cc_bounds :=cap_cc.bounds
+-    // cap_fat.bounds:= cap_uncompress_cap.cap_fat_bounds 
+-    cap_fat.reg_id:= 0.U
+-    cap_fat.async:= 1.U
+-    cap_fat.padding:= 0.U
+-    cap_fat.renode_id:= cap_cc.renode_id
+-    cap_fat.meta.ty  := cap_cc.meta.ty
+-    cap_fat.meta.perm:= cap_cc.meta.perm
++  cap_uncompress_cap.cap_cc_bounds.iE := cap_cc.bounds.iE   
++  cap_uncompress_cap.cap_cc_bounds.t  := cap_cc.bounds.t     
++  cap_uncompress_cap.cap_cc_bounds.tE := cap_cc.bounds.tE     
++  cap_uncompress_cap.cap_cc_bounds.b  := cap_cc.bounds.b     
++  cap_uncompress_cap.cap_cc_bounds.bE := cap_cc.bounds.bE     
++  cap_uncompress_cap.cap_cc_bounds.cursor := cap_cc.bounds.cursor
++
++  cap_fat.bounds.top    := cap_uncompress_cap.cap_fat_bounds.top
++  cap_fat.bounds.base   := cap_uncompress_cap.cap_fat_bounds.base
++  cap_fat.bounds.cursor := cap_uncompress_cap.cap_fat_bounds.cursor
++
++  cap_fat.reg_id:= 0.U
++  cap_fat.async:= 0.U
++  cap_fat.padding:= 0.U
++  cap_fat.renode_id:= cap_cc.renode_id
++  cap_fat.meta.ty  := cap_cc.meta.ty
++  cap_fat.meta.perm:= cap_cc.meta.perm
+   }
+ 
+-    printf("data is in UNcompress3_CAP cursor/=  %b -\n",cap_fat.bounds.cursor)
+-    printf("data is in UNcompress3_CAP BASE/=  %b -\n",cap_fat.bounds.base)
+-    printf("data is in UNcompress3_CAP top/=  %b -\n",cap_fat.bounds.top)
++    printf("data is in UNcompress3_CAP cursor/=  %b\n",cap_fat.bounds.cursor)
++    printf("data is in UNcompress3_CAP BASE/=  %b\n",cap_fat.bounds.base)
++    printf("data is in UNcompress3_CAP top/=  %b\n",cap_fat.bounds.top)
+ 
+-    printf("data is in UNcompress4_CAP cursor/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.cursor)
+-    printf("data is in UNcompress4_CAP BASE/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.base)
+-    printf("data is in UNcompress4_CAP top/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.top)
+-
+-
+-}
+-
+-class cap_cc_set_async_reg_id extends Module {
+-
+-  val async   =  IO(Input(0.U(1.W)))//Bool()
+-  val reg_id  =  IO(Input(0.U(5.W)))//Vec(5, Bool())
+-  val cap_cc_n= IO(Output(new cap_cc_t()))
+-  val cap_cc  =  IO(Input (new cap_cc_t()))
+-  // val cap_cc_n= Wire(new cap_cc_t())
+-  // val cap_cc  = Wire (new cap_cc_t())
+-
+-    cap_cc_n := cap_cc;
+-    cap_cc_n.bounds.b(5,1) := reg_id
+-    cap_cc_n.bounds.b(0) := async
+-    
+-  }
+-
+-class cap_cc_get_async  extends Module {
+- 
+-  val cap_cc =IO(Input(new cap_cc_t()))
+-  // val cap_cc =Wire(new cap_cc_t())
++    printf("data is in UNcompress4_CAP cursor/=  %b\n",cap_uncompress_cap.cap_fat_bounds.cursor)
++    printf("data is in UNcompress4_CAP BASE/=  %b\n",cap_uncompress_cap.cap_fat_bounds.base)
++    printf("data is in UNcompress4_CAP top/=  %b\n",cap_uncompress_cap.cap_fat_bounds.top)
+ 
+-  val Outputt=IO(Output(0.U(1.W)))//(Bool())
+ 
+-   Outputt := cap_cc.bounds.b(0)
+ }
+ 
+-class cap_cc_is_cap extends Module {
+-// 
+-  val cap_cc =IO(Input(new cap_cc_t()))
+-  // val cap_cc =Wire(new cap_cc_t())
+-  val out    =IO(Output(0.U(1.W)))//Bool()
+-  
+-    out:= cap_cc; // FIXME: temporary hack//??
+-  }
+-
+ // converts a fat cap into a compressed cap
+  class cap_compress extends Module {
+ 
+   val cap_fat =IO(Input(new cap_fat_t()))
+   val cap_cc  =IO(Output(new cap_cc_t()))
+-  // val cap_fat =Wire(new cap_fat_t())
+-  // val cap_cc  =Wire(new cap_cc_t())
+ 
+-   printf("cap_compress cap_fat.bounds.top=  %b -\n",cap_fat.bounds.top)
+-   printf("dcap_compress cap_fat.bounds.base=%b -\n",cap_fat.bounds.base)
+-   printf("cap_compress cap_fat.bounds.cursor=%b -\n",cap_fat.bounds.cursor)
+-   printf("cap_compress  cap_fat.renod=%b -\n",cap_fat.renode_id)
++   printf("cap_compress cap_fat.bounds.top=  %b\n",cap_fat.bounds.top)
++   printf("dcap_compress cap_fat.bounds.base=%b\n",cap_fat.bounds.base)
++   printf("cap_compress cap_fat.bounds.cursor=%b\n",cap_fat.bounds.cursor)
++   printf("cap_compress  cap_fat.renod=%b\n",cap_fat.renode_id)
+ 
+ 
+   val cap_compress_cap = Module( new cap_bounds_compress)
+@@ -439,9 +401,9 @@ class cap_cc_is_cap extends Module {
+    cap_cc.bounds.iE  := 0.U    //1
+    cap_cc.bounds.t   := 0.U//9
+    cap_cc.bounds.tE  := 0.U //3
+-   cap_cc.bounds.b   := Cat(cap_fat.async,cap_fat.reg_id(5,1),0.U(4.W))
++   cap_cc.bounds.b   := Cat(0.U(5.W),cap_fat.reg_id,cap_fat.async)
+    cap_cc.bounds.bE  := 0.U//3
+-   cap_cc.bounds.cursor  := Cat(cap_fat.bounds.base)
++   cap_cc.bounds.cursor  := cap_fat.bounds.base//Cat(cap_fat.bounds.base)
+    cap_cc.renode_id:= cap_fat.renode_id
+ 
+ 
+@@ -466,10 +428,46 @@ class cap_cc_is_cap extends Module {
+    }
+ 
+    printf("cap_compress b=  %b -\n",cap_cc.bounds.b)
+-   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.cursor)
+-   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.iE)
+-   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.bE)
++   printf("cap_compress cap_cc.bounds.cursor=%b\n",cap_cc.bounds.cursor)
++   printf("cap_compress cap_cc.bounds.cursor=%b\n",cap_cc.bounds.iE)
++   printf("cap_compress cap_cc.bounds.cursor=%b\n",cap_cc.bounds.bE)
+   }
++
++class cap_cc_set_async_reg_id extends Module {
++
++  val async   =  IO(Input(0.U(1.W)))//Bool()
++  val reg_id  =  IO(Input(0.U(5.W)))//Vec(5, Bool())
++  val cap_cc_n= IO(Output(new cap_cc_t()))
++  val cap_cc  =  IO(Input (new cap_cc_t()))
++  // val cap_cc_n= Wire(new cap_cc_t())
++  // val cap_cc  = Wire (new cap_cc_t())
++
++    cap_cc_n := cap_cc;
++    cap_cc_n.bounds.b(5,1) := reg_id
++    cap_cc_n.bounds.b(0) := async
++    
++  }
++
++class cap_cc_get_async  extends Module {
++ 
++  val cap_cc =IO(Input(new cap_cc_t()))
++  // val cap_cc =Wire(new cap_cc_t())
++
++  val Outputt=IO(Output(0.U(1.W)))//(Bool())
++
++   Outputt := cap_cc.bounds.b(0)
++}
++
++class cap_cc_is_cap extends Module {
++// 
++  val cap_cc =IO(Input(new cap_cc_t()))
++  // val cap_cc =Wire(new cap_cc_t())
++  val out    =IO(Output(0.U(1.W)))//Bool()
++  
++    out:= cap_cc; // FIXME: temporary hack//??
++  }
++
++
+ ////////////////////////////////////////////////////////////////////////node//////////////////////////////////
+ 
+ 
+@@ -3000,6 +2998,7 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+   redirectOut.cfiUpdate.predTaken := uop.cf.pred_taken
+ 
+   io.in.ready  := io.out.ready
++  io.out.valid := io.in.valid
+   io.out.bits.uop <> io.in.bits.uop
+ //  io.out.bits.data := dataModule.io.result
+   io.out.bits.data := ResSel.io.ExRes
+@@ -3053,9 +3052,9 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+    val cap_uncompress_cap = Module(new cap_uncompress)
+    val cap_compress_cap   = Module(new cap_compress)
+    val rs2_c  = Reg(new cap_fat_t) 
+-   rs1_c.bounds.cursor:=1400.U//"h00df000000121400".U
+-   rs1_c.bounds.base  :=1000.U//"h00df000000121000".U
+-   rs1_c.bounds.top   :=2000.U//"h00df000000122000".U
++   rs1_c.bounds.cursor:=807661056.U//"h00df000000121400".U//1400.U//
++   rs1_c.bounds.base  :=807660032.U//"h00df000000121000".U//1000.U//
++   rs1_c.bounds.top   :=807664128.U//"h00df000000122000".U//2000.U//
+            
+    rs1_c.reg_id:= 3.U
+    rs1_c.async:= 1.U
+-- 
+2.34.1
+

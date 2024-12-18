@@ -1,0 +1,3236 @@
+From 8409b34dce0844705e14126488cdedb05f010d12 Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Fri, 2 Aug 2024 10:12:30 +0800
+Subject: [PATCH 07/16] change for compression instruction
+
+---
+ Makefile                                      |    2 +-
+ .../scala/xiangshan/backend/exu/Exu.scala     |   32 +
+ src/main/scala/xiangshan/backend/fu/Alu.scala | 1768 ++++++++++-------
+ .../xiangshan/backend/fu/FunctionUnit.scala   |    7 +-
+ src/main/scala/xiangshan/package.scala        |  457 +----
+ 5 files changed, 1130 insertions(+), 1136 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 2c97d2e95..52409a4a3 100644
+--- a/Makefile
++++ b/Makefile
+@@ -49,7 +49,7 @@ endif
+ 
+ # emu for the release version
+ RELEASE_ARGS = --disable-all --remove-assert --fpga-platform
+-DEBUG_ARGS   = --enable-difftest
++DEBUG_ARGS   = --enable-difftest --enable-log
+ ifeq ($(RELEASE),1)
+ override SIM_ARGS += $(RELEASE_ARGS)
+ else
+diff --git a/src/main/scala/xiangshan/backend/exu/Exu.scala b/src/main/scala/xiangshan/backend/exu/Exu.scala
+index 28fa21fe9..e4e5aeb24 100644
+--- a/src/main/scala/xiangshan/backend/exu/Exu.scala
++++ b/src/main/scala/xiangshan/backend/exu/Exu.scala
+@@ -147,6 +147,21 @@ abstract class Exu(cfg: ExuConfig)(implicit p: Parameters) extends XSModule {
+ 
+     if (fuCfg.hasInputBuffer._1) {
+       val buffer = Module(new InputBuffer(fuCfg.hasInputBuffer._2, fuCfg.hasInputBuffer._3))
++      //mlabaf//capstone
++     buffer.io.in.bits.operand_a := 0.U
++     buffer.io.in.bits.operand_b := 0.U
++     buffer.io.in.bits.imm       := 0.U
++     buffer.io.in.bits.cap_a     := 0.U
++     buffer.io.in.bits.cap_b     := 0.U
++     buffer.io.in.bits.cap_c     := 0.U
++     buffer.io.in.bits.tag_a     := 0.U
++     buffer.io.in.bits.tag_b     := 0.U
++     buffer.io.in.bits.tag_c     := 0.U
++     buffer.io.in.bits.valid     := 0.U 
++     buffer.io.in.bits.rd        := 0.U
++     buffer.io.in.bits.rs1       := 0.U
++     buffer.io.in.bits.rs2       := 0.U  
++      
+       buffer.io.redirect <> io.redirect
+       buffer.io.in.valid := in.valid && sel
+       buffer.io.in.bits.uop := in.bits.uop
+@@ -155,6 +170,22 @@ abstract class Exu(cfg: ExuConfig)(implicit p: Parameters) extends XSModule {
+       buffer.io.in.ready
+     }
+     else {
++
++            //mlabaf//capstone
++     fu.io.in.bits.operand_a := 0.U
++     fu.io.in.bits.operand_b := 0.U
++     fu.io.in.bits.imm       := 0.U
++     fu.io.in.bits.cap_a     := 0.U
++     fu.io.in.bits.cap_b     := 0.U
++     fu.io.in.bits.cap_c     := 0.U
++     fu.io.in.bits.tag_a     := 0.U
++     fu.io.in.bits.tag_b     := 0.U
++     fu.io.in.bits.tag_c     := 0.U
++     fu.io.in.bits.valid     := 0.U 
++     fu.io.in.bits.rd        := 0.U
++     fu.io.in.bits.rs1       := 0.U
++     fu.io.in.bits.rs2       := 0.U 
++
+       fu.io.in.valid := in.valid && sel
+       fu.io.in.bits.uop := in.bits.uop
+       fu.io.in.bits.src := in.bits.src
+@@ -179,6 +210,7 @@ abstract class Exu(cfg: ExuConfig)(implicit p: Parameters) extends XSModule {
+           r.bits.uop := l.bits.uop
+           r.bits.data := l.bits.data
+         }
++        
+         arb.io.out <> out
+       }
+     } else {
+diff --git a/src/main/scala/xiangshan/backend/fu/Alu.scala b/src/main/scala/xiangshan/backend/fu/Alu.scala
+index 254bb9dd8..17e86844e 100644
+--- a/src/main/scala/xiangshan/backend/fu/Alu.scala
++++ b/src/main/scala/xiangshan/backend/fu/Alu.scala
+@@ -34,7 +34,15 @@ import circt.stage.ChiselStage
+     val perm = UInt(3.W)//new cap_perm_t() // ;  // 3 bits
+   }// extra metadata, 6 bits
+ 
+-
++  // Only use struct when signals have same direction
++  // exception
++  class exception_t extends Bundle{
++    val causeriscv =UInt(XLEN.W)  // cause of exception
++    val tvalriscv  =UInt(XLEN.W)  // additional information of causing exception (e.g.: instruction causing it),
++    // address of LD/ST fault
++    val is_virt =UInt(1.W)  // Capstone: is this a virtual interrupt?
++    val valid   =UInt(1.W)
++  } 
+ ///////////////////////////////////cap_fat/////////////////////////////////////
+   class cap_fat_bounds_t extends Bundle {
+ //  class cap_fat_bounds_t extends Module {
+@@ -52,26 +60,17 @@ import circt.stage.ChiselStage
+   // not including the tag bit
+   class cap_fat_t  extends Bundle{
+     val renode_id  = cap_renode_id_t// 31 bits
+-    val meta   = new cap_metadata_t() // 6 bits
++    val meta   = new cap_metadata_t // 6 bits
+     val reg_id = UInt(5.W)//(Vec(5,Bool()))// 5 bits
+     val async  = UInt(1.W)//Bool   // 1 bit
+     val padding= UInt(21.W)//Vec(21,Bool()) // 21 bits
+-    val bounds = new cap_fat_bounds_t()  // 64 * 3 bits
++    val bounds = new cap_fat_bounds_t // 64 * 3 bits
+    } // fat 256-bit capability
+ ///////////////////////////////////cap_cc//////////////////////////////////////////////
+     // low to high
+     // the raw bit representation of a compressed bound
+     // 27 bits + cursor
+   class cap_cc_bounds_t extends Bundle{
+-//  class cap_cc_bounds_t extends Module{
+-  //  val io = IO(new Bundle() {
+- /*   val iE    = Input (Bool())
+-    val t     = Input (Vec(9,Bool())) // 21 bits
+-    val tE    = Input (Vec(3,Bool())) // 21 bits
+-    val b     = Input (Vec(11,Bool())) // 21 bits
+-    val bE    = Input (Vec(3,Bool())) // 21 bits
+-    val cursor= Input (UInt ()) // 21 bits
+-    })*/
+     val iE    = UInt(1.W)//(Bool())
+     val t     = UInt(9.W) //(Vec(9,Bool())) 
+     val tE    = UInt(3.W)//(Vec(3,Bool())) 
+@@ -112,7 +111,7 @@ import circt.stage.ChiselStage
+ //////////////////////////////////////node/////////////////
+  class node_mut_t extends Bundle{
+    val node_id = cap_renode_id_t 
+-   val node_op = node_mut_type_t 
++   val node_op = UInt (4.W)//node_mut_type_t 
+    val alloc   = UInt (1.W)  
+    val new_node_id = cap_renode_id_t 
+   } 
+@@ -135,223 +134,198 @@ class node_query_resp_t extends Bundle{
+ // converts a compressed bounds into a fat bounds
+ //class cap_bounds_uncompres extends Bundle {
+ class cap_bounds_uncompres extends Module {
+- // val io = IO(new Bundle() {})
+-  //val cap_cc_bounds  =Input ( Module(new cap_cc_bounds_t()))
+- // val cap_fat_bounds =Output ( Module(new cap_fat_bounds_t()))  
+- // val cap_cc_bounds  =Module(new cap_cc_bounds_t)
+-//  val cap_fat_bounds =Module(new cap_fat_bounds_t)
+   val cap_cc_bounds  =IO(Input(new cap_cc_bounds_t))
+   val cap_fat_bounds =IO(Output(new cap_fat_bounds_t))
+- //}
+- //)
+-  //var E = Vec (6, Bool())
+-  //val E =VecInit.fill(6)(false.B)
+-  val E = Wire(UInt(6.W))
+-  val B = Wire(UInt(14.W))
+-  val T = Wire(UInt(14.W))
++
++  val E = Reg(UInt(6.W))
++  val B = Reg(UInt(14.W))
++  val T = Reg(UInt(14.W))
+   
+   val carry_out = Wire(UInt(1.W))
+   val msb  =  Wire(UInt(1.W))//Bool()
+-  val bb, tt =  Wire (UInt(XLEN.W))
++  val bb, tt =  Reg (UInt(XLEN.W))
+   val A3, B3, T3, R  =  Wire(UInt(3.W))
+ 
+-// B.slice(3,13) := cap_cc_bounds.b.slice(0,10)
+-// B.slice(3,11) := cap_cc_bounds.b.slice(0,8)
+-
+-// B(11,3) := cap_cc_bounds.b(8,0)
+-B := Cat(0.U(3.W),cap_cc_bounds.b(8,0),0.U(2.W) ) 
+-
+- // for (i <- 0 until 10)
+-//    B(i+3) := (cap_cc_bounds.b(i))
++  B := Cat(cap_cc_bounds.b(10,0),0.U(3.W)) 
++  printf("cap_bounds_uncompres b/=  %b -\n",cap_cc_bounds.b(10,0))
++  printf("cap_bounds_uncompres B/=  %b -\n",B)
+ 
+-  // for (i <- 3 until 11)
+-  //   B(i) := (cap_cc_bounds.t(i-3))
++  T := Cat(0.U(2.W),cap_cc_bounds.b(8,0),0.U(3.W)) 
++  printf("cap_bounds_uncompres T/=  %b -\n",T)
+ 
+-//  B(13,3) := Bool(cap_cc_bounds.b(10,0))
+-//  T(11,3) := Bool(cap_cc_bounds.t(8,0))
+ //  if (cap_cc_bounds.iE===0.U )
+-  if (cap_cc_bounds.iE==false.B )
++  if (cap_cc_bounds.iE==0.U )
+   {
+-    msb := false.B
+-    for (i <- 0 until 5)
+-      E(i) := (false.B)
+-
+-  //  E = VecInitFill(6)(false.B)
+-  //  T(2,0) = cap_cc_bounds.tE
+-  //  B(2,0) = cap_cc_bounds.bE
+-    T := Cat(cap_cc_bounds.tE(2,0),T(13,3) ) 
+-    B := Cat(cap_cc_bounds.bE(2,0),B(13,3) ) 
+-
+-    // for (i <- 0 until 2)
+-    // {
+-    //   T(i) := cap_cc_bounds.tE(i)
+-    //   B(i) := cap_cc_bounds.bE(i)
+-    // }
+-   // if (T(11,0) < B(11,0))
+-   //  carry_out := true.B
+-   // else 
+-   //   carry_out := false.B
+-   carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
+-   //Cat(Fill(32, func(0)), Fill(32, 1.U)) & src1
++      msb := 0.U
++    // for (i <- 0 until 5)
++    //   E(i) := (false.B)
++      E := 0.U(6.W)
++      T := Cat(T(13,3),cap_cc_bounds.tE(2,0) ) 
++      B := Cat(B(13,3),cap_cc_bounds.bE(2,0) ) 
++
++      // carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
++      carry_out := Mux(T(11,0) < B(11,0), 1.U, 0.U)
+   }    
+   else
+   {
+-    T := Cat(cap_cc_bounds.tE(2,0),T(13,3) ) 
+-    B := Cat(cap_cc_bounds.bE(2,0),B(13,3) ) 
+-    // for (i <- 0 until 2)
+-    // {
+-    //   T(i) := cap_cc_bounds.tE(i)
+-    //   B(i) := cap_cc_bounds.bE(i)
+-    // }
+-
+-    E := Cat(cap_cc_bounds.tE(2,0), cap_cc_bounds.bE(5,3) ) 
+-
+-    // for (i <- 0 until 2)
+-    // {
+-    //  E(i)   := cap_cc_bounds.tE(i)
+-    //  E(i+3) := cap_cc_bounds.bE(i)
+-    // }
+-        
+- //  E := (cap_cc_bounds.tE, cap_cc_bounds.bE)
+-  T := Cat(0.U(3.W), T(13,3)) 
+-  B := Cat(0.U(3.W), B(13,3)) 
+-  //  for (i <- 0 until 2)
+-  //   {
+-  //     T(i) := false.B
+-  //     B(i) := false.B
+-  //   }
+-  // if (T(11,0) < B(11,0))
+-   //if (T< B)
+-    // carry_out := true.B
+-   //else 
+-     //carry_out := false.B
+-
+-   carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
+- //  carry_out = T(11,3) < B(11,3)
+-    msb := true.B
++   E := Cat(cap_cc_bounds.tE(2,0), cap_cc_bounds.bE(2,0) ) 
++   T := Cat(T(13,3),0.U(3.W)) 
++   B := Cat(B(13,3),0.U(3.W)) 
++   carry_out := Mux(T(11,3) < B(11,3), 1.U, 0.U)
++   msb := 1.U
+  }
+-   
++    printf("cap_bounds_uncompres1 bb/=  %b -\n",bb)
++    printf("cap_bounds_uncompres tt/=  %b -\n",tt)
+ //   T(13,12) := B(13,12) + ("b0".U, carry_out) + ("b0".U, msb)
+   //  T(13,12) := B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+   //  T(13,12) := B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+-    val K =B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+-    T := Cat(T(11,0),K)
++    
++    val K = B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
++    T := Cat(K,T(11,0))
++
++    printf("cap_bounds_uncompres2 bb/=  %b -\n",bb)
++    printf("cap_bounds_uncompres tt/=  %b -\n",tt)
+ 
+     bb := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), B(13,0)) << E
+     tt := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), T(13,0)) << E
+ 
+-  //  bb := cap_cc_bounds.cursor >> 14.U//, B(13,0)) << E
+- // val bitShift = B(5, 0) << 1.U
+- // val bitShift2 = cap_cc_bounds.cursor >> 1.U
++    printf("cap_bounds_uncompres3 bb/=  %b -\n",bb)
++    printf("cap_bounds_uncompres tt/=  %b -\n",tt)
+ 
+   // correction
+-   A3 := (cap_cc_bounds.cursor >> (E + 11.U(6.W)))(2,0)
+-   
+-  // B3 = B(13,11)
+-  // T3 = T(13,11)
+-  T3 := Cat(T(13,11)) 
+-  B3 := Cat(B(13,11)) 
++   A3 := Cat((cap_cc_bounds.cursor >> (E + 11.U(6.W)))(2,0))
+ 
+-  //  for (i <- 0 until 2)
+-  //   {
+-  //     B3(i) := B(i+11)
+-  //     T3(i) := T(i+11)
+-  //   }   
++   T3 := Cat(T(13,11)) 
++   B3 := Cat(B(13,11))   
+    R := B3 - 1.U(3.W)
+ 
+   // $display("Before correction: b = %0x, t = %0x", b, t);
+-  tt := Mux((A3 >= R) && (T3 < R), tt + 1.U(6.W) << (E + 14.U(6.W)), Mux((A3 < R && T3 >= R), tt - 1.U(6.W) << (E + 14.U(6.W)), false.B))    
+-  //if((A3 >= R) && (T3 < R))
+-  //  tt :=tt + 1.U(6.W) << (E + 14.U(6.W))
+-  //else if(A3 < R && T3 >= R)
+-  //  tt :=tt - 1.U(6.W) << (E + 14.U(6.W))
+-     
++  tt := Mux((A3 >= R) && (T3 < R), tt + 1.U(6.W) << (E + 14.U(6.W)), Mux(((A3 < R) && (T3 >= R)), tt - 1.U(6.W) << (E + 14.U(6.W)), 0.U))         
+   bb := Mux((A3 >= R) && (B3 < R), bb + 1.U(6.W) << (E + 14.U(6.W)), Mux(((A3 < R) && (B3 >= R)), bb - 1.U(6.W)<< (E + 14.U(6.W)), false.B))    
+-  //if((A3 >= R) && (B3 < R))
+-  //  bb :=bb + 1.U(6.W) << (E + 14.U(6.W))
+-  //else if((A3 < R) && (B3 >= R))
+-  // bb :=bb - 1.U(6.W)<< (E + 14.U(6.W))
++ 
++  printf("cap_bounds_uncompres4 bb/=  %b -\n",bb)
++  printf("cap_bounds_uncompres tt/=  %b -\n",tt)
+ 
+   cap_fat_bounds.cursor:= cap_cc_bounds.cursor
+- // cap_fat_bounds.base:= b
+- // cap_fat_bounds.top:= t    
++  cap_fat_bounds.base:= bb
++  cap_fat_bounds.top:= tt    
++
++  printf("cap_bounds_uncompres5 bb/=  %b -\n",cap_fat_bounds.base)
++  printf("cap_bounds_uncompres tt/=  %b -\n",cap_fat_bounds.top)
+ }
+ 
+ 
+ // converts a fat bounds into a compressed bounds
+ class cap_bounds_compress extends Module {
+-//  val io = IO(new Bundle() {
+-//  val cap_cc_bounds  =Output (Module(new cap_cc_bounds_t()))
+-//  val cap_fat_bounds =Input  (Module(new cap_fat_bounds_t()))
+-// })
+-  val cap_cc_bounds  =IO(Output(new cap_cc_bounds_t()))
+-  val cap_fat_bounds =IO(Input(new cap_fat_bounds_t()))
+-
+-  val leading_zeros = 63.U(6.W)//UInt(6.W)// 0.U//"b000000".U(6.W)//VecInit.fill(6)(true.B)// //VecInit.fill(6)(true.B) //Vec(6, Bool())
+-  val E  = Wire(UInt(6.W)) //Vec(6, Bool())
+-  val iE = Wire(UInt(1.W)) //Bool()// 63
+-  val B  = Wire(UInt(14.W)) //  Vec(14, Bool())
+-  val T  = Wire(UInt(12.W)) //Vec(12, Bool())
+-  val len = cap_fat_bounds.top - cap_fat_bounds.base
+- 
+ 
+-  val test5=(leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))
+-  
++  val cap_cc_bounds  =IO(Output(new cap_cc_bounds_t))
++  val cap_fat_bounds =IO(Input(new cap_fat_bounds_t))
++  // val cap_cc_bounds  =Wire(new cap_cc_bounds_t)
++  // val cap_fat_bounds =Wire(new cap_fat_bounds_t)
++
++  val leading_zeros = Wire(UInt(6.W))//63.U(6.W)//?//UInt(6.W)// 0.U//"b000000".U(6.W)//VecInit.fill(6)(true.B)// //VecInit.fill(6)(true.B) //Vec(6, Bool())
++  val E  = Reg(UInt(6.W))//Wire(UInt(6.W)) //Vec(6, Bool())
++  val iE = Reg(UInt(1.W))//Wire(UInt(1.W)) //Bool()// 63
++  val B  = Reg(UInt(14.W))//Wire(UInt(14.W)) //  Vec(14, Bool())
++  val T  = Reg(UInt(12.W))//Wire(UInt(12.W)) //Vec(12, Bool())
++  val len= Wire(UInt(64.W))
++
++  len:= cap_fat_bounds.top - cap_fat_bounds.base
++  printf("cap_bounds_compress top=  %b \n",cap_fat_bounds.top)
++  printf("cap_bounds_compress base=  %b \n",cap_fat_bounds.base)
++
++  printf("cap_bounds_compress len=  %b \n",len)
++    
++  leading_zeros := 63.U
++  printf("cap_bounds_compress leading_zeros=%b\n", leading_zeros)
++
++  E:= 0.U
++  //  val test1=(leading_zeros > 12.U(6.W)) && ((len >> leading_zeros) & 1.U(XLEN.W))
++
++   val test1=(leading_zeros > 12.U(6.W)) 
++   val test2=(len >> leading_zeros)
++   val test3=Mux(test2(0),false.B,true.B)
++   val test4= test1 && test3
++
++  printf("cap_bounds_compress test4=%b\n", test4)
++
+   // $display("leading_zeros = %0x", leading_zeros);
+  // while(((leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))) === 0.U(XLEN.W)) 
+-  while(test5== 0.U(XLEN.W))
++  
++  while(test4==true.B)
+   {
+-  // leading_zeros := Mux (test5<1.U(6.W), leading_zeros - 1.U(6.W) ,0.U )
+-   E := leading_zeros - 12.U(6.W);
+-   test5:=(leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))
+-
+-  // $display("E = %0x", E);
++    leading_zeros := leading_zeros - 1.U
++    test1:=(leading_zeros > 12.U(6.W)) 
++    test2:=(len >> leading_zeros)
++    test3:=Mux(test2(0),false.B,true.B)
++    test4:= test1 && test3
+   }
+-  if(E ==0.U(6.W))
+-   if(len(12) == 0.U(1.W)) 
++  E := leading_zeros - 12.U(6.W)
++  printf("cap_bounds_compress E=%b\n",E )
++
++  if((E ==0.U(6.W))&&(len(12) == 0.U(1.W))) 
+    {
+     iE := 0.U
+     B := cap_fat_bounds.base(13,0)
+     T := cap_fat_bounds.top(11,0)
++
++
+    }     
+   else 
+   {
+     iE := 1.U(1.W)
+-    B(13,3) := (cap_fat_bounds.base >> E)(13,3)
+-    T(11,3) := (cap_fat_bounds.top >> E)(11,3)
++    val k1 = (cap_fat_bounds.base >> E)
++    val k2 = (cap_fat_bounds.top >> E)
++    B := Cat(k1(13,3), B(2,0))
++    T :=Cat(k2(11,3),T(2,0) )
++
++    // B := Cat((cap_fat_bounds.base >> E)(13,3), B(2,0))
++    // T :=Cat((cap_fat_bounds.top >> E)(11,3),T(2,0) )
+     // $display("B = %0x, T = %0x", B, T);
+     if(((cap_fat_bounds.top >> (E + 3.U)) << (E + 3.U)) != cap_fat_bounds.top)
+-      T(11,3) :=T(11,3) + 1.U(9.W)
++      // T(11,3) :=T(11,3) + 1.U(9.W)
++      T:= Cat (T(11,3) + 1.U(9.W), T(2,0))
+       // TODO: more corrections
+       // $display("B = %0x, T = %0x", B, T);
+-      B(2,0) := E(2,0)
+-      T(2,0) := E(5,3)
++      B:=Cat(B(13,3),E(2,0))
++      T:=Cat(T(11,6),E(5,3))
++      // B(2,0) := E(2,0)
++      // T(2,0) := E(5,3)
+   }
++
++  printf("cap_bounds_compress if B=%b\n", B)
++  printf("cap_bounds_compress if T=%b \n", T)
+   cap_cc_bounds.cursor:= cap_fat_bounds.cursor
+ 
+-  cap_cc_bounds.bE:= Cat(B(2,0))   
+-  // cap_cc_bounds.bE:= B(2,0)
+-  cap_cc_bounds.b:= Cat(B(13,3))   
+-  // cap_cc_bounds.b:= B(13,3)
+-  cap_cc_bounds.tE:= Cat(T(2,0))    
+-  // cap_cc_bounds.tE:= T(2,0)
+-  cap_cc_bounds.t:= Cat(T(11,3))      
+-  // cap_cc_bounds.t:= T(11,3)
+-  cap_cc_bounds.iE:= iE
++  cap_cc_bounds.bE:= B(2,0)
++  cap_cc_bounds.b:= B(13,3)
++  cap_cc_bounds.tE:= T(2,0)
++  cap_cc_bounds.t:= T(11,3)
++   cap_cc_bounds.iE:= iE
++    printf("cap_bounds_compress cursor/=  %b -\n",cap_cc_bounds.cursor)
++    printf("cap_bounds_compress bE/=  %b -\n",cap_cc_bounds.bE)
++    printf("dcap_bounds_compress b=  %b -\n",cap_cc_bounds.b)
++    printf("cap_bounds_compress tE=  %b -\n",cap_cc_bounds.tE)
++    printf("cap_bounds_compress t=  %b -\n",cap_cc_bounds.t)
++    printf("cap_bounds_compress iE=  %b -\n",cap_cc_bounds.iE)
++
+ }
+ 
+ // converts a compressed cap into a fat cap
+ class cap_uncompress extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_fat =Output cap_fat_t()
+- // val cap_cc  =Input cap_cc_t()
+-// })
++
+   val cap_fat =IO(Output(new cap_fat_t))
+   val cap_cc  =IO(Input(new cap_cc_t))
+-
+-  // val  cap_uncompress_cap =Module( new cap_bounds_uncompres)
++  // val cap_fat =Wire(new cap_fat_t)
++  // val cap_cc  =Wire(new cap_cc_t)
+ 
+   val  cap_uncompress_cap = Module( new cap_bounds_uncompres)
++    printf("cap_uncompress cursor/=  %b -\n",cap_cc_bounds.cursor)
++    printf("cap_uncompress bE/=  %b -\n",cap_cc_bounds.bE)
++    printf("cap_uncompress b=  %b -\n",cap_cc_bounds.b)
++    printf("cap_uncompress tE=  %b -\n",cap_cc_bounds.tE)
++    printf("dcap_uncompress t=  %b -\n",cap_cc_bounds.t)
++    printf("cap_uncompress iE=  %b -\n",cap_cc_bounds.iE)
+ 
+ if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+ { 
+@@ -361,31 +335,55 @@ if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type
+   cap_fat.reg_id:= cap_cc.bounds.b(5,1)
+   cap_fat.async:= cap_cc.bounds.b(0)
+   cap_fat.padding:= 0.U
+-  cap_fat.meta:= cap_cc.meta
++  cap_fat.meta.ty:= cap_cc.meta.ty
++  cap_fat.meta.perm:= cap_cc.meta.perm
+   cap_fat.renode_id:= cap_cc.renode_id
+  }
+  else
+- {  cap_uncompress_cap.cap_cc_bounds :=cap_cc.bounds
+-    cap_fat.bounds:= cap_uncompress_cap.cap_fat_bounds 
++ {
++
++
++     cap_uncompress_cap.cap_cc_bounds.iE := cap_cc.bounds.iE   
++     cap_uncompress_cap.cap_cc_bounds.t  := cap_cc.bounds.t     
++     cap_uncompress_cap.cap_cc_bounds.tE := cap_cc.bounds.tE     
++     cap_uncompress_cap.cap_cc_bounds.b  := cap_cc.bounds.b     
++     cap_uncompress_cap.cap_cc_bounds.bE := cap_cc.bounds.bE     
++     cap_uncompress_cap.cap_cc_bounds.cursor := cap_cc.bounds.cursor
++
++     cap_fat.bounds.top    := cap_uncompress_cap.cap_fat_bounds.top
++     cap_fat.bounds.base   := cap_uncompress_cap.cap_fat_bounds.base
++     cap_fat.bounds.cursor := cap_uncompress_cap.cap_fat_bounds.cursor
++
++  
++    // cap_uncompress_cap.cap_cc_bounds :=cap_cc.bounds
++    // cap_fat.bounds:= cap_uncompress_cap.cap_fat_bounds 
+     cap_fat.reg_id:= 0.U
+     cap_fat.async:= 1.U
+     cap_fat.padding:= 0.U
+     cap_fat.renode_id:= cap_cc.renode_id
+-    cap_fat.meta:= cap_cc.meta
++    cap_fat.meta.ty  := cap_cc.meta.ty
++    cap_fat.meta.perm:= cap_cc.meta.perm
+   }
++
++    printf("data is in UNcompress3_CAP cursor/=  %b -\n",cap_fat.bounds.cursor)
++    printf("data is in UNcompress3_CAP BASE/=  %b -\n",cap_fat.bounds.base)
++    printf("data is in UNcompress3_CAP top/=  %b -\n",cap_fat.bounds.top)
++
++    printf("data is in UNcompress4_CAP cursor/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.cursor)
++    printf("data is in UNcompress4_CAP BASE/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.base)
++    printf("data is in UNcompress4_CAP top/=  %b -\n",cap_uncompress_cap.cap_fat_bounds.top)
++
++
+ }
+ 
+ class cap_cc_set_async_reg_id extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_cc  = Input new cap_cc_t()
+- // val async   = Input(UInt(1.W))//Bool()
+- // val reg_id  = Input(UInt(5.W))//Vec(5, Bool())
+- // val cap_cc_n= Output new cap_cc_t() 
+-//  })
+-  val cap_cc  =  IO(Input (new cap_cc_t()))
++
+   val async   =  IO(Input(0.U(1.W)))//Bool()
+   val reg_id  =  IO(Input(0.U(5.W)))//Vec(5, Bool())
+   val cap_cc_n= IO(Output(new cap_cc_t()))
++  val cap_cc  =  IO(Input (new cap_cc_t()))
++  // val cap_cc_n= Wire(new cap_cc_t())
++  // val cap_cc  = Wire (new cap_cc_t())
+ 
+     cap_cc_n := cap_cc;
+     cap_cc_n.bounds.b(5,1) := reg_id
+@@ -394,22 +392,19 @@ class cap_cc_set_async_reg_id extends Module {
+   }
+ 
+ class cap_cc_get_async  extends Module {
+-//  val io = IO(new Bundle() {
+-  //val cap_cc =Input cap_cc_t()
+-// val Outputt =Output(0.U(1.W))//Bool())
+-//})  
++ 
+   val cap_cc =IO(Input(new cap_cc_t()))
++  // val cap_cc =Wire(new cap_cc_t())
++
+   val Outputt=IO(Output(0.U(1.W)))//(Bool())
+ 
+    Outputt := cap_cc.bounds.b(0)
+ }
+ 
+ class cap_cc_is_cap extends Module {
+-//  val io = IO(new Bundle() {
+-  //val cap_cc =Input new cap_cc_t()
+-//  val out    =Output(UInt(1.W))//Bool())
+- //})
++// 
+   val cap_cc =IO(Input(new cap_cc_t()))
++  // val cap_cc =Wire(new cap_cc_t())
+   val out    =IO(Output(0.U(1.W)))//Bool()
+   
+     out:= cap_cc; // FIXME: temporary hack//??
+@@ -417,59 +412,252 @@ class cap_cc_is_cap extends Module {
+ 
+ // converts a fat cap into a compressed cap
+  class cap_compress extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_fat =Input new cap_fat_t()
+- // val cap_cc  =Output new cap_cc_t()
+- //})
+ 
+   val cap_fat =IO(Input(new cap_fat_t()))
+   val cap_cc  =IO(Output(new cap_cc_t()))
++  // val cap_fat =Wire(new cap_fat_t())
++  // val cap_cc  =Wire(new cap_cc_t())
+ 
+-  val cap_compress_cap = Module( new cap_bounds_compress)
+-  val bounds_cc =  (new cap_cc_bounds_t)
++   printf("cap_compress cap_fat.bounds.top=  %b -\n",cap_fat.bounds.top)
++   printf("dcap_compress cap_fat.bounds.base=%b -\n",cap_fat.bounds.base)
++   printf("cap_compress cap_fat.bounds.cursor=%b -\n",cap_fat.bounds.cursor)
++   printf("cap_compress  cap_fat.renod=%b -\n",cap_fat.renode_id)
+ 
+ 
++  val cap_compress_cap = Module( new cap_bounds_compress)
++  // val bounds_cc =  (new cap_cc_bounds_t)
++  //val bounds_cc =  Wire(new cap_cc_bounds_t)
++
+   if ((cap_fat.meta.ty == cap_type_t.CAP_TYPE_SEALED) || (cap_fat.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+   {
+   // we don't need to store full bounds. Instead, we reuse the bits
+   // for async and reg
+-   //bounds_cc := 0.U
+-   bounds_cc.cursor := cap_fat.bounds.base
+-   bounds_cc.b(0) := cap_fat.async
+-   bounds_cc.b(5,1) := cap_fat.reg_id
+ 
+-   cap_cc.bounds:= 0.U
+-   cap_cc.meta:= cap_fat.meta
++  //  cap_cc.bounds:= 0.U
++   cap_cc.meta.ty:= cap_fat.meta.ty
++   cap_cc.meta.perm:= cap_fat.meta.perm
++   cap_cc.bounds.iE  := 0.U    //1
++   cap_cc.bounds.t   := 0.U//9
++   cap_cc.bounds.tE  := 0.U //3
++   cap_cc.bounds.b   := Cat(cap_fat.async,cap_fat.reg_id(5,1),0.U(4.W))
++   cap_cc.bounds.bE  := 0.U//3
++   cap_cc.bounds.cursor  := Cat(cap_fat.bounds.base)
+    cap_cc.renode_id:= cap_fat.renode_id
++
++
+   }
+   else 
+    {
+-     cap_compress_cap.cap_fat_bounds :=cap_fat.bounds
+-     cap_cc.bounds:= cap_compress_cap.cap_cc_bounds 
+-    //  cap_cc.bounds.bounds:=cap_bounds_compress(cap_fat.bounds)
++
++     cap_compress_cap.cap_fat_bounds.top    :=cap_fat.bounds.top
++     cap_compress_cap.cap_fat_bounds.base   :=cap_fat.bounds.base
++     cap_compress_cap.cap_fat_bounds.cursor :=cap_fat.bounds.cursor
++
++     cap_cc.bounds.iE    := cap_compress_cap.cap_cc_bounds.iE 
++     cap_cc.bounds.t     := cap_compress_cap.cap_cc_bounds.t 
++     cap_cc.bounds.tE    := cap_compress_cap.cap_cc_bounds.tE 
++     cap_cc.bounds.b     := cap_compress_cap.cap_cc_bounds.b 
++     cap_cc.bounds.bE    := cap_compress_cap.cap_cc_bounds.bE 
++     cap_cc.bounds.cursor:= cap_compress_cap.cap_cc_bounds.cursor
++
+      cap_cc.renode_id:= cap_fat.renode_id
+-     cap_cc.meta:= cap_fat.meta
++     cap_cc.meta.ty  := cap_fat.meta.ty
++     cap_cc.meta.perm:= cap_fat.meta.perm
+    }
++
++   printf("cap_compress b=  %b -\n",cap_cc.bounds.b)
++   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.cursor)
++   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.iE)
++   printf("cap_compress cap_cc.bounds.cursor=%b -\n",cap_cc.bounds.bE)
+   }
++////////////////////////////////////////////////////////////////////////node//////////////////////////////////
++
++
++
++  
++  class send_node_query extends Module
++   {
++    val revnode_id  = IO(Input(cap_renode_id_t))
++    val node_query_sent_q  = IO(Input(UInt(1.W)))
++    val node_query_ready_i = IO(Input(UInt(1.W)))
++    val node_query_sent_d  = IO(Output(UInt(1.W))) 
++    val node_query_valid_o = IO(Output(UInt(1.W))) 
++    val node_query_resp_received_q = IO(Input(UInt(1.W))) 
++    val rd_result_o  = IO(Output(new cap_result_t ))  
++    val node_query_o = IO(Output(new node_query_t ))     
++    val synchronous  = IO(Input(UInt(1.W)))
++    val node_query_resp_result_d   = IO(Output(UInt(1.W)))
++    val node_query_resp_received_d = IO(Output(UInt(1.W)))
++    val node_query_resp_i = IO(Input(new node_query_resp_t))
++    val node_query_resp_result_q = IO(Output(UInt(1.W)))
++    val node_query_resp_valid_i = IO(Input(UInt(1.W))) 
++
++     node_query_sent_d := node_query_sent_q  
++
++    if (node_query_sent_q== 0.U) 
++      {
++      if (node_query_ready_i== 1.U) 
++        {
++        node_query_valid_o   := 1.U(1.W)
++        node_query_o.node_id := revnode_id
++        node_query_o.synchronous := synchronous
++        node_query_o.trans_id := 0.U
++
++        node_query_sent_d := 1.U(1.W)
++        
++        if(synchronous==1.U) 
++        {
++          node_query_resp_received_d := 1.U(1.W)
++          // wait_for_this_cycle(); // for a synchronous query, we still need to wait for the result
++        }
++       } 
++     else 
++      {
++        // wait_for_this_cycle();
++      }
++     } 
++     else if (synchronous==1.U) 
++      {
++      if (node_query_resp_received_q==0.U) 
++        {
++        if ((node_query_resp_valid_i==1.U) && (node_query_resp_i.synchronous==1.U)) 
++          {
++          node_query_resp_received_d := 1.U(1.W)
++          node_query_resp_result_d   := node_query_resp_i.r_valid
++          rd_result_o.cap            := (node_query_resp_i.r_valid)
++          }
++          else
++          { 
++          // wait_for_this_cycle();
++          }
++        }      
++        else 
++        {
++        rd_result_o.cap := node_query_resp_result_q
++        }
++      }
++    }
++   
++   class send_node_mut extends Module 
++   {
++    // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
++    val revnode_id = IO(Input( cap_renode_id_t))
++    val node_alloc_node_id_cur = IO(Input( cap_renode_id_t))
++    val mut_ty     = IO(Input( UInt(4.W)))
++    val node_mut_valid_o = IO(Output(UInt(1.W)))
++    val node_mut_o = IO(Output(new node_mut_t))
++    val have_alloc = IO(Input(UInt(1.W)))
++     
++     node_mut_valid_o  := 1.U
++
++     node_mut_o.node_id:= revnode_id
++     node_mut_o.node_op:= mut_ty
++     node_mut_o.alloc  := have_alloc
++     node_mut_o.new_node_id:= node_alloc_node_id_cur
++   }
++
++  class send_node_alloc extends Module 
++  {
++    // this reuses capstone_valid_o so it's safe to always set node_mut_valid_o
++    val cap_cc = IO(Input( new cap_cc_t))
++    val node_alloc_state_d   = IO(Output( UInt(4.W)))//IO(Output(new node_mut_type_t))
++    val node_mut_valid_o     = IO(Output(UInt(1.W)))
++    val node_alloc_state_q   = IO(Input(UInt(4.W)))
++    val node_alloc_node_id_q = IO(Input(UInt(1.W)))
++    val node_alloc_node_id_d = IO(Output(new node_mut_t))  
++    val node_alloc_valid_o   = IO(Output(UInt(1.W))) 
++    val node_alloc_ready_i   = IO(Output(UInt(1.W))) 
++     
++  
++   switch (node_alloc_state_q)
++    {
++      is (mut_t.NODE_ALLOC_IDLE) 
++      {
++        if (node_alloc_ready_i==1.U) 
++          {
++          node_alloc_valid_o := 1.U
++          node_alloc_state_d := mut_t.NODE_ALLOC_SENT
++          }
++      }
++      is (mut_t.NODE_ALLOC_SENT) 
++      {
++        // special treatment later
++      }
++      is (mut_t.NODE_ALLOC_RECEIVED) 
++      {
++        // special treatment later
++      }  
++    }
++  }
++
+   ////////////////////////////////////////////////////////capstone class end //////////////////////////////////
+ //mlabaf//capstone
+-//class CapMove(implicit p: Parameters) extends XSModule {
+- class crevokeModule2 extends Module {  
++class crevokeModule(implicit p: Parameters) extends XSModule {
++ //class crevokeModule extends Module {  
+   val src       = IO(Input(new fu_data_t))
+   val crevoke   = IO(Output(new cap_result_t ))
+   val crevoke2  = IO(Output(new cap_result_t ))
+   // io.rd_result_o.tag:= 1.U(1.W)
+ 
+-  //  val rs1_cc=Module(new cap_cc_t)
+-  //  val rs1_c =Module(new cap_fat_t)
+-  //  val cap_uncompress_cap=Module(new cap_uncompress)
+-  //  val cap_compress_cap  =Module(new cap_compress)
+-   val rs1_cc = Wire(new cap_cc_t)
+-   val rs1_c  = Wire(new cap_fat_t)
+-  //  val cap_uncompress_cap=Wire(new cap_uncompress)
+-  //  val cap_compress_cap  =Wire(new cap_compress)   
++
++   val rs1_cc = Reg(new cap_cc_t)
++   val rs1_c  = Reg(new cap_fat_t) 
+    val cap_uncompress_cap = Module(new cap_uncompress)
+-   val cap_compress_cap   = Module(new cap_compress)
++
++
++///for test  
++  // val cap_compress_cap  =Module(new cap_compress)
++
++  //  val rs2_c  = Wire(new cap_fat_t) 
++  //  rs1_c.bounds.cursor:=242.U//"h00df000000121400".U
++  //  rs1_c.bounds.base:=128.U//"h00df000000121000".U
++  //  rs1_c.bounds.top:=21.U//"h00df000000122000".U
++           
++  //  rs1_c.reg_id:= 0.U
++  //  rs1_c.async:= 1.U
++  //  rs1_c.padding:=0.U
++  //  rs1_c.meta.ty:= cap_type_t.CAP_TYPE_EXIT
++  //  rs1_c.meta.perm:= cap_perm_t.CAP_PERM_RWX
++            
++  //  rs1_c.renode_id:=12.U
++
++  //  cap_compress_cap.cap_fat:=rs1_c
++  //  rs1_cc:= cap_compress_cap.cap_cc
++
++  //  printf("cap_compress function in revoke")    
++  // //  XSDebug("data is in compress=  -%b -%b -%b -\n",rs1_cc.renode_id, rs1_cc.meta.ty, rs1_cc.meta.perm)
++  //  XSDebug("data is in ucompress1=  %b\n",rs1_c.renode_id)
++  //  XSDebug("data is in ucompress2=  %b\n", rs1_c.meta.ty)
++  //  XSDebug("data is in ucompress3=  %b\n",rs1_c.bounds.top)
++  //  XSDebug("data is in ucompress4=  %b\n", rs1_c.bounds.cursor)
++  //  XSDebug("data is in ucompress5=  %b\n",rs1_c.bounds.base)
++  // //  XSDebug("data is in compress1=  %b\n",rs1_cc.bounds)
++  //  XSDebug("data is in compress2=  %b\n",rs1_cc.bounds.cursor)
++  //  XSDebug("data is in compress3=  %b \n",rs1_cc.bounds.iE)
++  //  XSDebug("data is in compress3=  %b \n", rs1_cc.bounds.t)
++  //  XSDebug("data is in compress3=  %b \n", rs1_cc.bounds.tE)
++  //  XSDebug("data is in compress3=  %b \n", rs1_cc.bounds.b )
++  //  XSDebug("data is in compress3=  %b \n", rs1_cc.bounds.bE)
++
++  //   // val iE    = UInt(1.W)//(Bool())
++  //   // val t     = UInt(9.W) //(Vec(9,Bool())) 
++  //   // val tE    = UInt(3.W)//(Vec(3,Bool())) 
++  //   // val b     = UInt(11.W)//(Vec(11,Bool())) 
++  //   // val bE    = UInt(3.W)//(Vec(3,Bool())) 
++  //   // val cursor= UInt(XLEN.W)//(Vec(XLEN,Bool())) 
++
++  //  cap_uncompress_cap.cap_cc:=rs1_cc
++  //  rs2_c := cap_uncompress_cap.cap_fat
++
++  //  printf("cap_uncompress function in revoke")   
++  // //  XSDebug("data is in uncompress=%b, %b, %b, %b, %b, %b, \n",rs2_c.bounds.cursor, rs2_c.bounds.base , rs2_c.bounds.top ,rs2_c.reg_id,rs2_c.async, rs1_c.meta.ty )
++  //  XSDebug("data is in uncompress1=%b\n",rs2_c.bounds.cursor)
++  //  XSDebug("data is in uncompress2=%b\n",rs2_c.bounds.base)
++  //  XSDebug("data is in uncompress3=%b\n",rs2_c.bounds.top)
++  //  XSDebug("data is in uncompress4=%b\n",rs2_c.reg_id)
++   
++
++///end test
+ 
+    rs1_cc.renode_id  := Cat(src.cap_a(30,0))//31
+    rs1_cc.meta.ty    := Cat(src.cap_a(33,31)) //6
+@@ -481,8 +669,6 @@ class cap_cc_is_cap extends Module {
+    rs1_cc.bounds.bE  := Cat(src.cap_a(63,61))//3
+    rs1_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
+  
+-  // cap_uncompress_cap.io.cap_cc:=rs1_cc
+-  // rs1_c := cap_uncompress_cap.io.cap_fat  
+   cap_uncompress_cap.cap_cc:=rs1_cc
+   rs1_c := cap_uncompress_cap.cap_fat
+ 
+@@ -495,42 +681,39 @@ class cap_cc_is_cap extends Module {
+     rs1_cc.meta.ty := cap_type_t.CAP_TYPE_LINEAR
+     // rs1_result_o = '{ cap: 128'(rs1_cc), tag: 1'b1, valid: 1'b1 };
+       
++    crevoke.cap  := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm,rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor )
++    crevoke.tag  := 1.U(1.W)
++    crevoke.valid:= 1.U(1.W) 
+ 
+-  crevoke.cap(30,0):= rs1_cc.renode_id
+-  crevoke.cap(36,31):= rs1_cc.meta
+-  crevoke.cap(127,37):= rs1_cc.bounds
+-  crevoke.tag:= 1.U(1.W)
+-  crevoke.valid:= 1.U(1.W) 
+-    
+-  crevoke2.cap  := 0.U 
+-  crevoke2.tag  := 0.U(1.W)
+-  crevoke2.valid:= 0.U(1.W)  
+     // send_node_query(rs1_cc.renode_id, 1'b0);
+     // send_node_mut(rs1_cc.renode_id, NODE_REVOKE);
+      
+      
+-    }
+-    //  else
+-    //  {
++     }
++  else
++     {
++      crevoke.cap  := 0.U 
++      crevoke.tag  := 0.U(1.W)
++      crevoke.valid:= 0.U(1.W)  
+     //   // ex_o.valid = 1'b1;
+-    //  }
+-
+-
+-
+-    // io.crevoke:=io.src
++     }
+  
++     
++  crevoke2.cap  := 0.U 
++  crevoke2.tag  := 0.U(1.W)
++  crevoke2.valid:= 0.U(1.W)  
++
+   }
+ 
+-//  class cshrinkModule(implicit p: Parameters) extends XSModule {
+- class cshrinkModule extends Module {
++  class cshrinkModule(implicit p: Parameters) extends XSModule {
++ //class cshrinkModule extends Module {
+     val src      = IO(Input(new fu_data_t))
+     val cshrink  = IO(Output(new cap_result_t )) 
+     val cshrink2 = IO(Output(new cap_result_t )) 
+ 
+    //unpacked capability
+-   val rs1_cc =Wire(new cap_cc_t)  
+-   val res    =Wire(new cap_cc_t)
+-   val rs1_c  =Wire(new cap_fat_t)
++   val rs1_cc =Reg(new cap_cc_t)  
++   val rs1_c  =Reg(new cap_fat_t)
+    val cursor =Wire(UInt(XLEN.W))
+ 
+    rs1_cc.renode_id  := Cat(src.cap_c(30,0))//31
+@@ -589,18 +772,16 @@ class cap_cc_is_cap extends Module {
+ 
+   // rd_result_o = '{cap: 128'(rs1_cc), tag: '1, valid: '1};
+ 
+-    // cshrink2.cap(30,0)  := Cat(rs1_cc.renode_id)
+-    // cshrink2.cap(36,31) := Cat(rs1_cc.meta.ty,rs1_cc.meta.perm)
+-    // cshrink2.cap(127,37):= Cat(rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor )
+-    cshrink2.tag  := 1.U(1.W)
+-    cshrink2.valid:= 1.U(1.W)
++    cshrink2.cap  := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm,rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor )
++    cshrink2.tag  := 0.U 
++    cshrink2.valid:= 1.U
+ 
+     cshrink.cap        := 0.U
+     cshrink.tag        := 0.U 
+     cshrink.valid      := 0.U
+   }
+-//  class ctightenModule(implicit p: Parameters) extends XSModule {
+- class ctightenModule extends Module {
++  class ctightenModule(implicit p: Parameters) extends XSModule {
++ //class ctightenModule extends Module {
+ 
+    val src          = IO(Input(new fu_data_t))
+    val ctighten     = IO(Output(new cap_result_t ))   
+@@ -610,18 +791,17 @@ class cap_cc_is_cap extends Module {
+ 
+    val rs1_cc=Wire(new cap_cc_t)  
+    val res   =Wire(new cap_cc_t)  
+-   val rs1_c =Wire(new cap_fat_t)
+    val imm = src.operand_b
+ 
+-   rs1_cc.renode_id := Cat(src.cap_c(30,0))//31
+-   rs1_cc.meta.ty    := Cat(src.cap_c(33,31)) //6
+-   rs1_cc.meta.perm  := Cat(src.cap_c(36,34)) //6  
+-   rs1_cc.bounds.iE  := Cat(src.cap_c(37))    //1
+-   rs1_cc.bounds.t   := Cat(src.cap_c(46,38)) //9
+-   rs1_cc.bounds.tE  := Cat(src.cap_c(49,47)) //3
+-   rs1_cc.bounds.b   := Cat(src.cap_c(60,50)) //11
+-   rs1_cc.bounds.bE  := Cat(src.cap_c(63,61))//3
+-   rs1_cc.bounds.cursor  := Cat(src.cap_c(127,64)) //64
++   rs1_cc.renode_id := Cat(src.cap_a(30,0))//31
++   rs1_cc.meta.ty    := Cat(src.cap_a(33,31)) //6
++   rs1_cc.meta.perm  := Cat(src.cap_a(36,34)) //6  
++   rs1_cc.bounds.iE  := Cat(src.cap_a(37))    //1
++   rs1_cc.bounds.t   := Cat(src.cap_a(46,38)) //9
++   rs1_cc.bounds.tE  := Cat(src.cap_a(49,47)) //3
++   rs1_cc.bounds.b   := Cat(src.cap_a(60,50)) //11
++   rs1_cc.bounds.bE  := Cat(src.cap_a(63,61))//3
++   rs1_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
+ 
+    if (src.tag_a==0.U || (rs1_cc.meta.ty!=cap_type_t.CAP_TYPE_LINEAR || rs1_cc.meta.ty==cap_type_t.CAP_TYPE_NONLIN || rs1_cc.meta.ty==cap_type_t.CAP_TYPE_UNINIT) ||
+       (rs1_cc.meta.perm !=(imm))) 
+@@ -636,9 +816,7 @@ class cap_cc_is_cap extends Module {
+     if (src.rs1 == src.rd) 
+     {
+     // rd_result_o = '{cap: 128'(res), tag: '1, valid: '1};
+-      ctighten2.cap(0,30)   := Cat(res.renode_id)
+-      ctighten2.cap(31,36)  := Cat(res.meta.ty,res.meta.perm)
+-      ctighten2.cap(37,127) := Cat(res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor )
++      ctighten2.cap  := Cat(res.renode_id,res.meta.ty,res.meta.perm,res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor)
+       ctighten2.tag  := 1.U(1.W)
+       ctighten2.valid:= 1.U(1.W)  
+     }
+@@ -664,8 +842,6 @@ class cap_cc_is_cap extends Module {
+       ctighten.valid:= 1.U(1.W) 
+ 
+       ctighten2.cap   := Cat(res.renode_id,res.meta.ty,res.meta.perm,res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor )
+-      // ctighten2.cap(36,31)  := Cat()
+-      // ctighten2.cap(127,37) := Cat(res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor )
+       ctighten2.tag         := 1.U(1.W)
+       ctighten2.valid       := 1.U(1.W) 
+ 
+@@ -678,8 +854,7 @@ class cap_cc_is_cap extends Module {
+ 
+    //unpacked capability
+    val rs1_cc=Wire(new cap_cc_t)  
+-   val cursor=Wire(UInt(XLEN.W))
+-   val rs1_c =Wire(new cap_fat_t)
++
+ 
+    rs1_cc.renode_id := Cat(src.cap_c(30,0))//31
+    rs1_cc.meta.ty    := Cat(src.cap_c(36,31)) //6
+@@ -700,8 +875,6 @@ class cap_cc_is_cap extends Module {
+    rs1_cc.meta.ty := cap_type_t.CAP_TYPE_NONLIN;
+ 
+     cdelin2.cap         := Cat(rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)
+-    // cdelin2.cap(36,31)  := Cat( )
+-    // cdelin2.cap(127,37) := Cat( )
+     cdelin2.tag  := 1.U(1.W)
+     cdelin2.valid:= 1.U(1.W)   
+ 
+@@ -717,8 +890,7 @@ class cap_cc_is_cap extends Module {
+     val src = IO(Input(new fu_data_t))
+     val clcc = IO(Output(new cap_result_t ))   
+     val clcc2 = IO(Output(new cap_result_t ))   
+-   val fu_data_cur  = IO(Input(new fu_data_t))
+-   val rd_result_o  = IO(Output(new cap_result_t ))
++
+    //unpacked capability
+    val rs1_cc=Wire(new cap_cc_t)  
+    val rs1_c =Wire(new cap_fat_t)
+@@ -727,7 +899,6 @@ class cap_cc_is_cap extends Module {
+    val res   = Wire(UInt(XLEN.W))
+ 
+    val cap_uncompress_cap=Module(new cap_uncompress)
+-   val cap_compress_cap  =Module(new cap_compress)
+ 
+    rs1_cc.renode_id := Cat(src.cap_a(30,0))//31
+    rs1_cc.meta.ty   := Cat(src.cap_a(33,31)) //6
+@@ -750,7 +921,8 @@ class cap_cc_is_cap extends Module {
+       {
+        //ex_o.valid = 1;
+       }
+-
++    
++    res :=0.U(XLEN.W)
+     switch (imm)
+     {
+       is (0.U) 
+@@ -791,6 +963,10 @@ class cap_cc_is_cap extends Module {
+     clcc2.tag:= 0.U(1.W)
+     clcc2.valid:= 1.U(1.W)   
+ 
++    clcc.cap := 0.U
++    clcc.tag:= 0.U(1.W)
++    clcc.valid:= 1.U(1.W) 
++
+   //   if (imm == 0.U) 
+   //   {
+   //    // send_node_query(rs1_c.renode_id, 1'b1);
+@@ -798,10 +974,6 @@ class cap_cc_is_cap extends Module {
+   }
+ 
+  class csccModule extends Module {
+-  // val io = IO(new Bundle() {
+-  //   val src = Input(UInt(XLEN.W))
+-  //   val cscc = Output(UInt(XLEN.W))
+-  // })
+    val src   = IO(Input(new fu_data_t))
+    val cscc  = IO(Output(new cap_result_t ))   
+    val cscc2 = IO(Output(new cap_result_t ))  
+@@ -833,7 +1005,6 @@ class cap_cc_is_cap extends Module {
+    }
+ 
+    rs1_c.bounds.cursor := src.operand_b;
+-   //res = capstone::cap_compress(rs1_c);
+    cap_compress_cap.cap_fat:=rs1_c
+    res:= cap_compress_cap.cap_cc
+ 
+@@ -875,18 +1046,15 @@ class cap_cc_is_cap extends Module {
+   }
+ 
+  class csplitModule extends Module {
+-  // val io = IO(new Bundle() {
+-  //   val src = Input(UInt(XLEN.W))
+-  //   val csplit = Output(UInt(XLEN.W))
+-  // })
++ 
+    val src      = IO(Input(new fu_data_t))
+    val csplit   = IO(Output(new cap_result_t ))  
+    val csplit2  = IO(Output(new cap_result_t ))
+    //unpacked capability
+-   val rs1_cc=Wire(new cap_cc_t)
+-   val rd_cc =Wire(new cap_cc_t)
+-   val rs1_c =Wire(new cap_fat_t)
+-   val rd_c  =Wire(new cap_fat_t)
++   val rs1_cc=Reg(new cap_cc_t)
++   val rd_cc =Reg(new cap_cc_t)
++   val rs1_c =Reg(new cap_fat_t)
++   val rd_c  =Reg(new cap_fat_t)
+ 
+    rs1_cc.renode_id  := Cat(src.cap_a(30,0))//31
+    rs1_cc.meta.ty    := Cat(src.cap_a(33,31)) //6
+@@ -950,15 +1118,15 @@ csplit2.valid:= 1.U(1.W)
+ //send_node_mut(rs1_cc.renode_id, NODE_SPLIT);
+ 
+ }
+-
+- class csealModule extends Module {
++class csealModule(implicit p: Parameters) extends XSModule {
++//  class csealModule extends Module {
+ 
+     val src    = IO(Input(new fu_data_t))
+     val cseal  = IO(Output(new cap_result_t )) 
+     val cseal2 = IO(Output(new cap_result_t )) 
+    //unpacked capability
+-   val rs1_cc=Wire(new cap_cc_t)
+-   val rs1_c =Wire(new cap_fat_t)
++   val rs1_cc=Reg(new cap_cc_t)
++   val rs1_c =Reg(new cap_fat_t)
+ 
+    rs1_cc.renode_id := Cat(src.cap_a(30,0))//31
+    rs1_cc.meta.ty   := Cat(src.cap_a(33,31)) //6
+@@ -1016,13 +1184,14 @@ csplit2.valid:= 1.U(1.W)
+   cseal2.valid:= 1.U(1.W)
+ 
+   }
+- class cmrevModule extends Module {
++
++  class cmrevModule (implicit p: Parameters) extends XSModule {
++//  class cmrevModule extends Module {
+     val src     = IO(Input(new fu_data_t))
+     val cmrev   = IO(Output(new cap_result_t ))  
+     val cmrev2  = IO(Output(new cap_result_t ))  
+   //unpacked capability
+   val rs1_cc=Wire(new cap_cc_t)
+-  val rs1_c =Wire(new cap_fat_t)
+ 
+   rs1_cc.renode_id  := Cat(src.cap_a(30,0))//31
+   rs1_cc.meta.ty    := Cat(src.cap_a(33,31)) //6
+@@ -1037,8 +1206,8 @@ csplit2.valid:= 1.U(1.W)
+     {
+     rs1_cc.meta.ty := cap_type_t.CAP_TYPE_REVOKE
+  
+-    cmrev2.cap(30,0) := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)  
+-    cmrev2.tag:= 1.U(1.W)
++    cmrev2.cap  := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)  
++    cmrev2.tag  := 1.U(1.W)
+     cmrev2.valid:= 1.U(1.W)
+ 
+     // send_node_query(rs1_cc.renode_id, 1'b0);
+@@ -1048,22 +1217,31 @@ csplit2.valid:= 1.U(1.W)
+     }
+   else
+   {
++
++    cmrev2.cap  := 0.U
++    cmrev2.tag  := 0.U(1.W)
++    cmrev2.valid:= 0.U(1.W)
++
+     //error
+     //ex_o.valid = 1'b1;
+-  }  
++  } 
++
++    cmrev.cap  := 0.U
++    cmrev.tag  := 0.U(1.W)
++    cmrev.valid:= 0.U(1.W)
++
+   }
+ 
+- class cinitModule extends Module {
++//  class cinitModule extends Module {
++class cinitModule (implicit p: Parameters) extends XSModule {
+ 
+-    val src = IO(Input(new fu_data_t))
+-    val cinit  = IO(Output(new cap_result_t ))
++  val src = IO(Input(new fu_data_t))
++  val cinit  = IO(Output(new cap_result_t ))
++  val cinit2 = IO(Output(new cap_result_t ))
+ 
+-  val fu_data_cur  = IO(Input(new fu_data_t))
+-  val rs1_result_o = IO(Output(new cap_result_t ))
+-  val rd_result_o  = IO(Output(new cap_result_t ))
+   //unpacked capability
+-  val rs1_cc=Wire(new cap_cc_t)
+-  val rs1_c =Wire(new cap_fat_t)
++  val rs1_cc=Reg(new cap_cc_t)
++  val rs1_c =Reg(new cap_fat_t)
+ 
+   val cap_uncompress_cap=Module(new cap_uncompress)
+   val cap_compress_cap  =Module(new cap_compress)
+@@ -1071,35 +1249,34 @@ csplit2.valid:= 1.U(1.W)
+   cap_uncompress_cap.cap_cc:=rs1_cc
+   rs1_c := cap_uncompress_cap.cap_fat
+ 
+-  if ((fu_data_cur.tag_a==0.U) || (fu_data_cur.tag_b==1.U) || (rs1_c.meta.ty != cap_type_t.CAP_TYPE_UNINIT) || (rs1_c.bounds.cursor != rs1_c.bounds.top))         
++  if ((src.tag_a==0.U) || (src.tag_b==1.U) || (rs1_c.meta.ty != cap_type_t.CAP_TYPE_UNINIT) || (rs1_c.bounds.cursor != rs1_c.bounds.top))         
+   {
+     //error/exeption
+   }
+ 
+   rs1_c.meta.ty := cap_type_t.CAP_TYPE_LINEAR
+-  rs1_c.bounds.cursor := rs1_c.bounds.base + fu_data_cur.operand_b
++  rs1_c.bounds.cursor := rs1_c.bounds.base + src.operand_b
+ 
+   cap_compress_cap.cap_fat:=rs1_c
+   rs1_cc:= cap_compress_cap.cap_cc
+ 
+-  rs1_result_o.cap  := 0.U(128.W)
+-  rs1_result_o.tag  := 0.U(1.W)
+-  rs1_result_o.valid:= 1.U(1.W)
++  cinit.cap  := 0.U(128.W)
++  cinit.tag  := 0.U(1.W)
++  cinit.valid:= 1.U(1.W)
+ 
+ 
+-  rd_result_o.cap:= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)  
+-  rd_result_o.tag:= 1.U(1.W)
+-  rd_result_o.valid:= 1.U(1.W)
++  cinit2.cap:= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)  
++  cinit2.tag:= 1.U(1.W)
++  cinit2.valid:= 1.U(1.W)
+   
+   }
+- class cmovcModule extends Module {
++//  class cmovcModule extends Module {
++class cmovcModule (implicit p: Parameters) extends XSModule {
+ 
+   val src    = IO(Input(new fu_data_t))
+   val cmovc  = IO(Output(new cap_result_t ))
+   val cmovc2 = IO(Output(new cap_result_t ))
+ 
+-  val rs1_result_o = IO(Output(new cap_result_t ))
+-  val rd_result_o  = IO(Output(new cap_result_t ))
+   //unpacked capability
+   val rs1_cc=Wire(new cap_cc_t)
+ 
+@@ -1137,11 +1314,12 @@ csplit2.valid:= 1.U(1.W)
+ 
+   }
+ 
+- class cdropModule  extends Module {
++//  class cdropModule  extends Module {
++  class cdropModule (implicit p: Parameters) extends XSModule {
+ 
+   val src = IO(Input(new fu_data_t))
+   val cdrop  = IO(Output(new cap_result_t ))
+-  val fu_data_cur  = IO(Input(new fu_data_t))
++  val cdrop2 = IO(Output(new cap_result_t ))
+ 
+   val rs1_cc=Wire(new cap_cc_t)
+ 
+@@ -1162,19 +1340,28 @@ csplit2.valid:= 1.U(1.W)
+   //  }
+   //   // validity check first?
+   //   // followed by a nodedrop 
++    cdrop.cap :=0.U 
++    cdrop.tag:= 1.U(1.W)
++    cdrop.valid:= 1.U(1.W)
++
++   cdrop2.cap :=0.U 
++   cdrop2.tag:= 1.U(1.W)
++   cdrop2.valid:= 1.U(1.W)
++
++ 
+   }
+- class ccincoffsetModule extends Module {
++//  class ccincoffsetModule extends Module {
++  class ccincoffsetModule (implicit p: Parameters) extends XSModule {
+ 
+   val src = IO(Input(new fu_data_t))
+   val ccincoffset  = IO(Output(new cap_result_t ))
+   val ccincoffset2 = IO(Output(new cap_result_t ))
+ 
+    //unpacked capability
+-   val rs1_cc=Wire(new cap_cc_t)
+-   val res   =Wire(new cap_cc_t)
+-   val rs1_c =Wire(new cap_fat_t)
+-   val rd_c  =Wire(new cap_fat_t)
+-   val rs2   =Wire(UInt(XLEN.W))
++   val rs1_cc=Reg(new cap_cc_t)
++   val res   =Reg(new cap_cc_t)
++   val rs1_c =Reg(new cap_fat_t)
++   val rs2   =Reg(UInt(XLEN.W))
+     
+    rs1_cc.renode_id := src.cap_a(30,0)//31
+    rs1_cc.meta.ty   := src.cap_a(33,31) //6
+@@ -1236,15 +1423,15 @@ csplit2.valid:= 1.U(1.W)
+   }
+ 
+   }
+- class ccallModule extends Module {
+-
++//  class ccallModule extends Module {
++  class ccallModule (implicit p: Parameters) extends XSModule {
+     val src = IO(Input(new fu_data_t))
+     val ccall  = IO(Output(new cap_result_t ))
+     val ccall2  = IO(Output(new cap_result_t ))
+     val ccall3  = IO(Output(new cap_result_t ))
+ 
+-   val rs1_cc =Wire(new cap_cc_t)
+-   val rs1_c  =Wire(new cap_fat_t)
++   val rs1_cc =Reg(new cap_cc_t)
++   val rs1_c  =Reg(new cap_fat_t)
+    val cap_uncompress_cap=Module(new cap_uncompress)
+    val cap_compress_cap  =Module(new cap_compress)
+ 
+@@ -1288,6 +1475,15 @@ csplit2.valid:= 1.U(1.W)
+   ccall3.tag  := 1.U(1.W)
+   ccall3.valid:= 1.U(1.W)    
+ 
++
++  ccall.cap  :=  0.U
++  ccall.tag  := 0.U(1.W)
++  ccall.valid:= 0.U(1.W)    
++
++  ccall2.cap  := 0.U 
++  ccall2.tag  := 0.U(1.W)
++  ccall2.valid:= 0.U(1.W)    
++
+   // // dom_switch_valid_o = 1'b1;
+   // // dom_switch_req_o.dom_base = rs1_c.bounds.base;
+   // // dom_switch_req_o.out_dom_base = rs1_c.bounds.base;
+@@ -1300,14 +1496,15 @@ csplit2.valid:= 1.U(1.W)
+   // // send_node_query(rs1_c.renode_id, 1'b0);
+   }
+ 
+- class creturnModule extends Module {
++  class creturnModule (implicit p: Parameters) extends XSModule {
++//  class creturnModule extends Module {
+    val src = IO(Input(new fu_data_t))
+-   val creturn  = IO(Output(new cap_result_t ))
+-   val fu_data_cur  = IO(Input(new fu_data_t))
+-   val rs2_result_o = IO(Output(new cap_result_t ))
+-   val rd_result_o  = IO(Output(new cap_result_t ))
+-   val rd_cc =Wire(new cap_cc_t)
+-   val rd_c  =Wire(new cap_fat_t)
++   val creturn   = IO(Output(new cap_result_t ))
++   val creturn2  = IO(Output(new cap_result_t ))
++   val creturn3  = IO(Output(new cap_result_t ))
++ 
++   val rd_cc =Reg(new cap_cc_t)
++   val rd_c  =Reg(new cap_fat_t)
+    val cap_uncompress_cap=Module(new cap_uncompress)
+    val cap_compress_cap  =Module(new cap_compress)
+ 
+@@ -1319,6 +1516,7 @@ csplit2.valid:= 1.U(1.W)
+      rd_cc.bounds.tE  := Cat(src.cap_c(49,47)) //3
+      rd_cc.bounds.b   := Cat(src.cap_c(60,50)) //11
+      rd_cc.bounds.bE  := Cat(src.cap_c(63,61))//3
++     rd_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
+ 
+    cap_uncompress_cap.cap_cc:=rd_cc
+    rd_c := cap_uncompress_cap.cap_fat
+@@ -1338,9 +1536,9 @@ csplit2.valid:= 1.U(1.W)
+   rd_cc := cap_compress_cap.cap_cc 
+ 
+   // $display("Return to %s", cap_type_t.cap_cc_format(rd_cc));
+-  rd_result_o.cap  := Cat(rd_cc.renode_id,rd_cc.meta.ty,rd_cc.meta.perm, rd_cc.renode_id, rd_cc.meta.ty , rd_cc.meta.perm, rd_cc.bounds.iE , rd_cc.bounds.t , rd_cc.bounds.tE , rd_cc.bounds.b , rd_cc.bounds.bE ,rd_cc.bounds.cursor)  
+-  rd_result_o.tag  := 1.U(1.W)
+-  rd_result_o.valid:= 1.U(1.W)   
++  creturn2.cap  := Cat(rd_cc.renode_id,rd_cc.meta.ty,rd_cc.meta.perm, rd_cc.renode_id, rd_cc.meta.ty , rd_cc.meta.perm, rd_cc.bounds.iE , rd_cc.bounds.t , rd_cc.bounds.tE , rd_cc.bounds.b , rd_cc.bounds.bE ,rd_cc.bounds.cursor)  
++  creturn2.tag  := 1.U(1.W)
++  creturn2.valid:= 1.U(1.W)   
+ 
+   // $display("capstone return (writing to %d: %s) @ %t", rd_c.reg_id, capstone::cap_fat_format(rd_c), $time);
+ 
+@@ -1355,52 +1553,69 @@ csplit2.valid:= 1.U(1.W)
+ 
+   // rs2 provides the posted interrupts, which will be set in the
+   // commit stage
+-  rs2_result_o.cap  := fu_data_cur.operand_b
+-  rs2_result_o.tag:= 0.U(1.W)
+-  rs2_result_o.valid:= 1.U(1.W) 
++  creturn3.cap  := src.operand_b
++  creturn3.tag  := 0.U(1.W)
++  creturn3.valid:= 1.U(1.W) 
++
++  creturn.cap  := 0.U
++  creturn.tag  := 0.U(1.W)
++  creturn.valid:= 1.U(1.W) 
++
+   // send_node_query(rd_c.renode_id, 1'b0);
+ 
+-   creturn:=src      
+   }
+ 
+- class ccjalrModule  extends Module {
++  class ccjalrModule (implicit p: Parameters) extends XSModule {
++// class ccjalrModule  extends Module {
+   val src = IO(Input(new fu_data_t))
+   val ccjalr  = IO(Output(new cap_result_t ))
+-  ccjalr:=src    
+-  
++    ccjalr.cap  := 0.U
++    ccjalr.tag  := 0.U(1.W)
++    ccjalr.valid:= 0.U(1.W)   
+   }
+- class ccbnzModule extends Module {
++//  class ccbnzModule extends Module {
++ class ccbnzModule (implicit p: Parameters) extends XSModule {
+ 
+   val src = IO(Input(new fu_data_t))
+   val ccbnz  = IO(Output(new cap_result_t ))
+-  ccbnz:=src    
+-  
++    ccbnz.cap  := 0.U
++    ccbnz.tag  := 0.U(1.W)
++    ccbnz.valid:= 0.U(1.W)   
+   }
+-//  class cccsrrwModule (implicit p: Parameters) extends XSModule {
+- class cccsrrwModule extends Module {
++ class cccsrrwModule (implicit p: Parameters) extends XSModule {
++//  class cccsrrwModule extends Module {
+  
+   val src = IO(Input(new fu_data_t))
+   val cccsrrw  = IO(Output(new cap_result_t ))
+-  cccsrrw:=src  
+-   
++    cccsrrw.cap  := 0.U
++    cccsrrw.tag  := 0.U(1.W)
++    cccsrrw.valid:= 0.U(1.W)    
+   }
+ 
+-//  class ccincoffsetimModule (implicit p: Parameters) extends XSModule {
+- class ccincoffsetimModule  extends Module {
++  class ccincoffsetimModule(implicit p: Parameters) extends XSModule {
++// class ccincoffsetimModule  extends Module {
+    val src = IO(Input(new fu_data_t))
+    val ccincoffsetim  = IO(Output(new cap_result_t ))
+    val ccincoffsetim2  = IO(Output(new cap_result_t ))
+    val ccincoffsetim3  = IO(Output(new cap_result_t ))
+    
+-   val rs1_cc =Wire(new cap_cc_t)
+-   val res    =Wire(new cap_cc_t)
+-   val rs1_c  =Wire(new cap_fat_t)
++   val rs1_cc =Reg(new cap_cc_t)
++   val res    =Reg(new cap_cc_t)
++   val rs1_c  =Reg(new cap_fat_t)
+    val cap_uncompress_cap=Module(new cap_uncompress)
+    val cap_compress_cap  =Module(new cap_compress)
+ 
+-   rs1_cc.renode_id := src.cap_a(30,0)//31
+-   rs1_cc.meta := src.cap_a(36,31) //6
+-   rs1_cc.bounds := src.cap_a(127,37) //91
++
++     rs1_cc.renode_id := src.cap_a(30,0)//31
++     rs1_cc.meta.ty    := src.cap_a(33,31) //6
++     rs1_cc.meta.perm  := src.cap_a(36,34) //6
++     rs1_cc.bounds.iE  := Cat(src.cap_a(37)) //3    
++     rs1_cc.bounds.t   := Cat(src.cap_a(46,38)) //9
++     rs1_cc.bounds.tE  := Cat(src.cap_a(49,47)) //3
++     rs1_cc.bounds.b   := Cat(src.cap_a(60,50)) //11
++     rs1_cc.bounds.bE  := Cat(src.cap_a(63,61))//3
++     rs1_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
++
+ 
+    cap_uncompress_cap.cap_cc:=rs1_cc
+    rs1_c := cap_uncompress_cap.cap_fat
+@@ -1419,22 +1634,34 @@ csplit2.valid:= 1.U(1.W)
+    if (src.rs1 == src.rd)
+    {
+     // rd_result_o = '{cap: 128'(res), tag: '1, valid: '1};
++    ccincoffsetim.cap  := 0.U(128.W)
++    ccincoffsetim.tag  := 0.U(1.W)
++    ccincoffsetim.valid:= 0.U(1.W) 
++
+     ccincoffsetim2.cap  :=Cat(res.renode_id,res.meta.ty,res.meta.perm, res.renode_id, res.meta.ty , res.meta.perm, res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor)   
+     ccincoffsetim2.tag  := 1.U(1.W)
+     ccincoffsetim2.valid:= 1.U(1.W)     
++  
++    ccincoffsetim3.cap  := 0.U(128.W)
++    ccincoffsetim3.tag  := 0.U(1.W)
++    ccincoffsetim3.valid:= 0.U(1.W) 
+    } 
+    else if (rs1_cc.meta.ty == cap_type_t.CAP_TYPE_NONLIN)
+    {
+     // rs1_result_o = '{cap: 128'(rs1_cc), tag: '1, valid: '1};
+     // rd_result_o = '{cap: 128'(res), tag: '1, valid: '1}; 
+ 
+-    ccincoffsetim.cap(30,0):= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor)   
++    ccincoffsetim.cap:= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor)   
+     ccincoffsetim.tag:= 1.U(1.W)
+     ccincoffsetim.valid:= 1.U(1.W) 
+ 
+     ccincoffsetim2.cap  :=Cat(res.renode_id,res.meta.ty,res.meta.perm, res.renode_id, res.meta.ty , res.meta.perm, res.bounds.iE , res.bounds.t , res.bounds.tE , res.bounds.b , res.bounds.bE ,res.bounds.cursor)   
+     ccincoffsetim2.tag  := 1.U(1.W)
+     ccincoffsetim2.valid:= 1.U(1.W) 
++   
++    ccincoffsetim3.cap  := 0.U(128.W)
++    ccincoffsetim3.tag  := 0.U(1.W)
++    ccincoffsetim3.valid:= 0.U(1.W) 
+    }
+    else 
+    {// rs1 is a linear type
+@@ -1445,41 +1672,43 @@ csplit2.valid:= 1.U(1.W)
+     ccincoffsetim.tag  := 0.U(1.W)
+     ccincoffsetim.valid:= 1.U(1.W) 
+ 
++    ccincoffsetim2.cap  := 0.U(128.W)
++    ccincoffsetim2.tag  := 0.U(1.W)
++    ccincoffsetim2.valid:= 0.U(1.W) 
++
+     ccincoffsetim3.cap := src.operand_b
+     ccincoffsetim3.tag:= 1.U(1.W)
+     ccincoffsetim3.valid:= 1.U(1.W)  
+    }
+   }
+ 
+- class cshrinktoModule  extends Module {
++ class cshrinktoModule(implicit p: Parameters) extends XSModule {
++//  class cshrinktoModule  extends Module {
+   // val io = IO(new Bundle() {
+   //   val src = Input(UInt(XLEN.W))
+   //   val cshrinkto = Output(UInt(XLEN.W))
+   // })
+-      val src = IO(Input(new fu_data_t))
++    val src = IO(Input(new fu_data_t))
+     val cshrinkto  = IO(Output(new cap_result_t ))
+-    cshrinkto:=src
+   
++    cshrinkto.cap  := 0.U
++    cshrinkto.tag  := 0.U(1.W)
++    cshrinkto.valid:= 0.U(1.W)  
++
+   }
+ 
+-  class ccapenterModule extends Module {
+-  // val io = IO(new Bundle() {
+-  //   val src = Input(UInt(XLEN.W))
+-  //   val ccapenter = Output(UInt(XLEN.W))
+-  // })
++ class ccapenterModule(implicit p: Parameters) extends XSModule {
++//  class ccapenterModule extends Module {
++ 
+     val src = IO(Input(new fu_data_t))
+     val ccapenter  = IO(Output(new cap_result_t ))
+-    val ccapenter2  = IO(Output(new cap_result_t ))
+-
+-   val fu_data_cur  = IO(Input(new fu_data_t))
+ 
+-   val rs1_cc,res  =Wire(new cap_cc_t)
+    val cap0, cap1, pc_cap  =Wire(new cap_fat_t)
+ 
+-   val cap_uncompress_cap=Module(new cap_uncompress)
+-   val cap_compress_cap  =Module(new cap_compress)
++ 
+    
+-   val lo, hi = UInt(XLEN.W)
++   val lo = Wire(UInt(XLEN.W))
++   val hi = Wire(UInt(XLEN.W))
+ 
+     if ((src.rs1 == 0.U(5.W)) && (src.rs2 == 0.U(5.W))) 
+    {
+@@ -1494,38 +1723,32 @@ csplit2.valid:= 1.U(1.W)
+     cap0.bounds.cursor:=  0.U(64.W)
+     cap0.bounds.base:=  0.U(64.W)
+     cap0.bounds.top:= lo
+-    cap0.reg_id:= 0.U(1.W)
+-    cap0.async:= 0.U(1.W)
+-    cap0.meta.ty:=cap_type_t.CAP_TYPE_LINEAR
++    cap0.reg_id   := 0.U(1.W)
++    cap0.async    := 0.U(1.W)
++    cap0.meta.ty  :=cap_type_t.CAP_TYPE_LINEAR
+     cap0.meta.perm:=cap_perm_t.CAP_PERM_RWX
+     cap0.renode_id:= 0.U(31.W)
++    cap0.padding  := 0.U
+             
+     cap1.bounds.cursor:=  hi
+-    cap1.bounds.base:=  hi
++    cap1.bounds.base  :=  hi
+     cap1.bounds.top:=0.U(64.W)
+-    cap1.reg_id:= 0.U(1.W)
+-    cap1.async:= 1.U(1.W)
+-    cap1.meta.ty:=cap_type_t.CAP_TYPE_LINEAR
++    cap1.reg_id   := 0.U(1.W)
++    cap1.async    := 1.U(1.W)
++    cap1.meta.ty  :=cap_type_t.CAP_TYPE_LINEAR
+     cap1.meta.perm:=cap_perm_t.CAP_PERM_RWX
+     cap1.renode_id:= 1.U(31.W)
++    cap1.padding  := 0.U
+ 
+     pc_cap.bounds.cursor:= lo
+     pc_cap.bounds.base:=  lo
+     pc_cap.bounds.top:= hi
+-    pc_cap.reg_id:= 0.U(1.W)
+-    pc_cap.async:= 1.U(1.W)
+-    pc_cap.meta.ty:=cap_type_t.CAP_TYPE_LINEAR
+-    pc_cap.meta.perm:=cap_perm_t.CAP_PERM_RWX
+-    pc_cap.renode_id:= 2.U(31.W)
+-
+-    pc_cap.bounds.cursor:= lo
+-    pc_cap.bounds.base:=  lo
+-    pc_cap.bounds.top:= hi
+-    pc_cap.reg_id:= 0.U(1.W)
+-    pc_cap.async:= 1.U(1.W)
+-    pc_cap.meta.ty:=cap_type_t.CAP_TYPE_LINEAR
++    pc_cap.reg_id   := 0.U(1.W)
++    pc_cap.async    := 1.U(1.W)
++    pc_cap.meta.ty  :=cap_type_t.CAP_TYPE_LINEAR
+     pc_cap.meta.perm:=cap_perm_t.CAP_PERM_RWX
+     pc_cap.renode_id:= 2.U(31.W)
++    pc_cap.padding  := 0.U
+ 
+     // cms_result_o = '{
+     //  cap0: capstone::cap_compress(cap0),
+@@ -1539,9 +1762,13 @@ csplit2.valid:= 1.U(1.W)
+   //printf("instruction in alu is capstone print")  
+  // XSDebug("instruction is capstone XSD=%b\n",io.src)
+   
++  ccapenter.cap  := 0.U(128.W) 
++  ccapenter.tag  := 0.U(1.W)
++  ccapenter.valid:= 0.U(1.W)
+ }
+ 
+- class ccreateModule extends Module {
++class ccreateModule(implicit p: Parameters) extends XSModule {
++//  class ccreateModule extends Module {
+   // val io = IO(new Bundle() {
+   //   val src = Input(UInt(XLEN.W))
+   //   val ccreate = Output(UInt(XLEN.W))
+@@ -1550,7 +1777,11 @@ csplit2.valid:= 1.U(1.W)
+   val ccreate  = IO(Output(new cap_result_t ))
+   val ccreate2  = IO(Output(new cap_result_t ))
+ 
+-  ccreate2.cap  :=0.U(128.W) 
++  ccreate.cap  := 0.U(128.W) 
++  ccreate.tag  := 0.U(1.W)
++  ccreate.valid:= 0.U(1.W)
++
++  ccreate2.cap  := 0.U(128.W) 
+   ccreate2.tag  := 1.U(1.W)
+   ccreate2.valid:= 1.U(1.W)
+ 
+@@ -1558,7 +1789,8 @@ csplit2.valid:= 1.U(1.W)
+     // send_node_mut(capstone::CAP_renode_id_NULL, NODE_CREATE);
+   
+   }
+- class ctypeModule extends Module {
++class ctypeModule(implicit p: Parameters) extends XSModule {
++//  class ctypeModule extends Module {
+     val src = IO(Input(new fu_data_t))
+     val ctype  = IO(Output(new cap_result_t ))
+     val ctype2  = IO(Output(new cap_result_t ))
+@@ -1572,15 +1804,22 @@ csplit2.valid:= 1.U(1.W)
+    rs1_cc.bounds.tE  := Cat(src.cap_a(49,47)) //3
+    rs1_cc.bounds.b   := Cat(src.cap_a(60,50)) //11
+    rs1_cc.bounds.bE  := Cat(src.cap_a(63,61))//3
++   rs1_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
+ 
+   //rd_result_o = '{cap: 128'(rs1_cc), tag: '1, valid: '1};
+ 
++  ctype.cap  := 0.U(128.W) 
++  ctype.tag  := 0.U(1.W)
++  ctype.valid:= 0.U(1.W)
++
+   ctype2.cap  :=Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)    
+   ctype2.tag  := 1.U(1.W)
+   ctype2.valid:= 1.U(1.W)  
+   }
+ 
+- class cnodeModule extends Module {
++
++class cnodeModule(implicit p: Parameters) extends XSModule {
++//  class cnodeModule extends Module {
+   // val io = IO(new Bundle() {
+   //   val src = Input(UInt(XLEN.W))
+   //   val cnode = Output(UInt(XLEN.W))
+@@ -1600,14 +1839,19 @@ csplit2.valid:= 1.U(1.W)
+    rs1_cc.bounds.b   := Cat(src.cap_a(60,50)) //11
+    rs1_cc.bounds.bE  := Cat(src.cap_a(63,61))//3
+    rs1_cc.renode_id := src.operand_a
++   rs1_cc.bounds.cursor  := Cat(src.cap_a(127,64)) //64
++
++  cnode.cap  := 0.U(128.W) 
++  cnode.tag  := 0.U(1.W)
++  cnode.valid:= 0.U(1.W)
+ 
+   cnode2.cap := Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)    
+   cnode2.tag := 1.U(1.W)
+   cnode2.valid:= 1.U(1.W) 
+ 
+   }
+-
+- class cpermModule extends Module {
++class cpermModule(implicit p: Parameters) extends XSModule {
++//  class cpermModule extends Module {
+   // val io = IO(new Bundle() {
+   //   val src = Input(UInt(XLEN.W))
+   //   val cperm = Output(UInt(XLEN.W))
+@@ -1617,23 +1861,27 @@ csplit2.valid:= 1.U(1.W)
+    val cperm2  = IO(Output(new cap_result_t ))
+    val rs1_cc=Wire(new cap_cc_t)
+ 
+-   rs1_cc.renode_id := src.cap_c(0,30)//31
++   rs1_cc.renode_id := src.cap_c(30,0)//31
+    rs1_cc.meta.ty   := src.operand_a
+    rs1_cc.meta.perm := src.operand_a
++   rs1_cc.bounds.iE  := Cat(src.cap_c(37)) //3
+    rs1_cc.bounds.t   := Cat(src.cap_c(46,38)) //9
+    rs1_cc.bounds.tE  := Cat(src.cap_c(49,47)) //3
+    rs1_cc.bounds.b   := Cat(src.cap_c(60,50)) //11
+    rs1_cc.bounds.bE  := Cat(src.cap_c(63,61))//3
++   rs1_cc.bounds.cursor  := Cat(src.cap_c(127,64)) //64
++
++  cperm.cap  := 0.U(128.W) 
++  cperm.tag  := 0.U(1.W)
++  cperm.valid:= 0.U(1.W)
+ 
+-  cperm2.cap(0,30):= rs1_cc.renode_id
+-  cperm2.cap(31,36):= rs1_cc.meta
+-  cperm2.cap(37,127):= rs1_cc.bounds
++  cperm2.cap:= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)    
+   cperm2.tag:= 1.U(1.W)
+   cperm2.valid:= 1.U(1.W) 
+ 
+   }
+-
+- class cboundModule  extends Module {
++class cboundModule(implicit p: Parameters) extends XSModule {
++//  class cboundModule  extends Module {
+   // val io = IO(new Bundle() {
+   //   val src = Input(UInt(XLEN.W))
+   //   val cbound = Output(UInt(XLEN.W))
+@@ -1641,8 +1889,8 @@ csplit2.valid:= 1.U(1.W)
+    val src      = IO(Input(new fu_data_t))
+    val cbound   = IO(Output(new cap_result_t ))
+    val cbound2  = IO(Output(new cap_result_t ))
+-   val rs1_cc=Wire(new cap_cc_t)
+-   val rs1_c =Wire(new cap_fat_t)
++   val rs1_cc=Reg(new cap_cc_t)
++   val rs1_c =Reg(new cap_fat_t)
+    val cap_uncompress_cap=Module(new cap_uncompress)
+    val cap_compress_cap  =Module(new cap_compress)
+ 
+@@ -1655,6 +1903,7 @@ csplit2.valid:= 1.U(1.W)
+    rs1_cc.bounds.tE  := Cat(src.cap_c(49,47)) //3
+    rs1_cc.bounds.b   := Cat(src.cap_c(60,50)) //11
+    rs1_cc.bounds.bE  := Cat(src.cap_c(63,61))//3
++   rs1_cc.bounds.cursor  := Cat(src.cap_c(127,64)) //64
+ 
+ 
+   cap_uncompress_cap.cap_cc:=rs1_cc
+@@ -1667,25 +1916,26 @@ csplit2.valid:= 1.U(1.W)
+  cap_compress_cap.cap_fat:=rs1_c
+  rs1_cc:= cap_compress_cap.cap_cc
+           
++  cbound.cap  := 0.U(128.W) 
++  cbound.tag  := 0.U(1.W)
++  cbound.valid:= 0.U(1.W)
+ 
+-  cbound2.cap(0,30):= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)    
++  cbound2.cap:= Cat(rs1_cc.renode_id,rs1_cc.meta.ty,rs1_cc.meta.perm, rs1_cc.renode_id, rs1_cc.meta.ty , rs1_cc.meta.perm, rs1_cc.bounds.iE , rs1_cc.bounds.t , rs1_cc.bounds.tE , rs1_cc.bounds.b , rs1_cc.bounds.bE ,rs1_cc.bounds.cursor)    
+   cbound2.valid:= 1.U(1.W) 
++  cbound2.tag  := 1.U(1.W)
+ 
+   }
+-
+- class cprintModule extends Module {
++class cprintModule(implicit p: Parameters) extends XSModule {
++//  class cprintModule extends Module {
+ 
+     val src     = IO(Input(new fu_data_t))
+     val cprint  = IO(Output(new cap_result_t ))
+-    val cprint2 = IO(Output(new cap_result_t ))
+ 
+    val rs1_cc=Wire(new cap_cc_t)
+    val rs1_c =Wire(new cap_fat_t)
+-   val cap_uncompress_cap=Module(new cap_uncompress)
+-   val cap_compress_cap  =Module(new cap_compress)
+ 
+-
+-   rs1_cc.renode_id := Cat(src.cap_a(30,0))//31
++   val cap_uncompress_cap=Module(new cap_uncompress)
++   rs1_cc.renode_id := Cat(src.cap_a(30,0))//31d
+    rs1_cc.meta.ty   := Cat(src.cap_a(33,31)) //6
+    rs1_cc.meta.perm := Cat(src.cap_a(36,34)) //6  
+    rs1_cc.bounds.iE  := Cat(src.cap_a(37)) //3    
+@@ -1693,6 +1943,7 @@ csplit2.valid:= 1.U(1.W)
+    rs1_cc.bounds.tE  := Cat(src.cap_c(49,47)) //3
+    rs1_cc.bounds.b   := Cat(src.cap_c(60,50)) //11
+    rs1_cc.bounds.bE  := Cat(src.cap_c(63,61))//3
++   rs1_cc.bounds.cursor  := Cat(src.cap_c(127,64)) //64
+ 
+   cap_uncompress_cap.cap_cc:=rs1_cc
+   rs1_c := cap_uncompress_cap.cap_fat
+@@ -1711,40 +1962,50 @@ csplit2.valid:= 1.U(1.W)
+   {
+             // $display("%t capprint: scalar = %x", $time, fu_data_cur.operand_a);
+   }
+-     
++  cprint.cap  := 0.U(128.W) 
++  cprint.tag  := 0.U(1.W)
++  cprint.valid:= 0.U(1.W)
++
+   }
+- class cregprintModule  extends Module {
+-  // val io = IO(new Bundle() {
+-  //   val src = Input(UInt(XLEN.W))
+-  //   val cregprint = Output(UInt(XLEN.W))
+-  // })
++class cregprintModule(implicit p: Parameters) extends XSModule {
++//  class cregprintModule  extends Module {
++
+   val src = IO(Input(new fu_data_t))
+   val cregprint  = IO(Output(new cap_result_t )) 
+ 
+-  cregprint:=src
++  cregprint.cap  := 0.U(128.W) 
++  cregprint.tag  := 0.U(1.W)
++  cregprint.valid:= 0.U(1.W)
++
++
+ }
+- class getrandModule extends Module {
+-  // val io = IO(new Bundle() {
+-  //   // val src = Input(UInt(XLEN.W))
+-  //   // val getrand = Output(UInt(XLEN.W))
+-  // })
+ 
++class getrandModule(implicit p: Parameters) extends XSModule {
++//  class getrandModule extends Module {
+     val src = IO(Input(new fu_data_t))
+     val getrand  = IO(Output(new cap_result_t ))
+-    getrand:=src
++
++  getrand.cap  := 0.U(128.W) 
++  getrand.tag  := 0.U(1.W)
++  getrand.valid:= 0.U(1.W)
+ 
+   }
+- class tagsetModule  extends Module {
++class tagsetModule(implicit p: Parameters) extends XSModule {
++//  class tagsetModule  extends Module {
+   // val io = IO(new Bundle() {
+   //   // val src = Input(UInt(XLEN.W))
+   //   // val tagset = Output(UInt(XLEN.W))
+   // })
+     val src = IO(Input(new fu_data_t))
+     val tagset  = IO(Output(new cap_result_t ))
+-  
+-     tagset:=src
++
++  tagset.cap  := 0.U(128.W) 
++  tagset.tag  := 0.U(1.W)
++  tagset.valid:= 0.U(1.W)
++
+   }
+- class taggetModule extends Module {
++   class taggetModule(implicit p: Parameters) extends XSModule {
++//  class taggetModule extends Module {
+   // val io = IO(new Bundle() {
+   //   // val src = Input(UInt(XLEN.W))
+   //   // val tagget = Output(UInt(XLEN.W))
+@@ -1752,11 +2013,13 @@ csplit2.valid:= 1.U(1.W)
+     val src = IO(Input(new fu_data_t))
+     val tagget  = IO(Output(new cap_result_t ))
+ 
+-    tagget:=src
++  tagget.cap  := 0.U(128.W) 
++  tagget.tag  := 0.U(1.W)
++  tagget.valid:= 0.U(1.W)
+ }
+ 
+-// class AddModule(implicit p: Parameters) extends XSModule {
+-class AddModule extends Module {
++class AddModule(implicit p: Parameters) extends XSModule {
++// class AddModule extends Module {
+   val io = IO(new Bundle() {
+     val src = Vec(2, Input(UInt(XLEN.W)))
+     val srcw = Input(UInt((XLEN/2).W))
+@@ -1770,12 +2033,12 @@ class AddModule extends Module {
+ 
+ //  printf("instruction in alu is addition print")  
+   
+- // XSDebug("instruction is additon XSD=%b\n",io.src(0))
++  XSDebug("instruction is additon XSD=%b\n",io.src(0))
+   
+ }
+ 
+-// class SubModule(implicit p: Parameters) extends XSModule {
+-class SubModule extends Module {
++class SubModule(implicit p: Parameters) extends XSModule {
++// class SubModule extends Module {
+   val io = IO(new Bundle() {
+     val src = Vec(2, Input(UInt(XLEN.W)))
+     val sub = Output(UInt((XLEN+1).W))
+@@ -1787,8 +2050,8 @@ class SubModule extends Module {
+  // printf("instruction in alu is subtraction")
+  }
+ 
+-// class LeftShiftModule(implicit p: Parameters) extends XSModule {
+-class LeftShiftModule extends Module {
++class LeftShiftModule(implicit p: Parameters) extends XSModule {
++// class LeftShiftModule extends Module {
+   val io = IO(new Bundle() {
+     val shamt = Input(UInt(6.W))
+     val revShamt = Input(UInt(6.W))
+@@ -1800,8 +2063,8 @@ class LeftShiftModule extends Module {
+   io.revSll := io.sllSrc << io.revShamt
+ }
+ 
+-// class LeftShiftWordModule(implicit p: Parameters) extends XSModule {
+-class LeftShiftWordModule extends Module {
++class LeftShiftWordModule(implicit p: Parameters) extends XSModule {
++// class LeftShiftWordModule extends Module {
+   val io = IO(new Bundle() {
+     val shamt = Input(UInt(5.W))
+     val revShamt = Input(UInt(5.W))
+@@ -1813,9 +2076,9 @@ class LeftShiftWordModule extends Module {
+   io.revSllw := io.sllSrc << io.revShamt
+ }
+ 
+-// class RightShiftModule(implicit p: Parameters) extends XSModule {
+-class RightShiftModule extends Module {
+-  val io = IO(new Bundle() {
++class RightShiftModule(implicit p: Parameters) extends XSModule {
++// class RightShiftModule extends Module {
++    val io = IO(new Bundle() {
+     val shamt = Input(UInt(6.W))
+     val revShamt = Input(UInt(6.W))
+     val srlSrc, sraSrc = Input(UInt(XLEN.W))
+@@ -1827,8 +2090,8 @@ class RightShiftModule extends Module {
+   io.revSrl  := io.srlSrc >> io.revShamt
+ }
+ 
+-// class RightShiftWordModule(implicit p: Parameters) extends XSModule {
+-class RightShiftWordModule extends Module {
++class RightShiftWordModule(implicit p: Parameters) extends XSModule {
++// class RightShiftWordModule extends Module {
+   val io = IO(new Bundle() {
+     val shamt = Input(UInt(5.W))
+     val revShamt = Input(UInt(5.W))
+@@ -1843,8 +2106,8 @@ class RightShiftWordModule extends Module {
+ }
+ 
+ 
+-// class MiscResultSelect(implicit p: Parameters) extends XSModule {
+-class MiscResultSelect extends Module {
++class MiscResultSelect(implicit p: Parameters) extends XSModule {
++//class MiscResultSelect extends Module {
+   val io = IO(new Bundle() {
+     val func = Input(UInt(6.W))
+     val and, or, xor, orcb, orh48, sextb, packh, sexth, packw, revb, rev8, pack = Input(UInt(XLEN.W))
+@@ -1875,8 +2138,8 @@ class MiscResultSelect extends Module {
+   io.miscRes := Mux(io.func(5), maskedLogicRes, Mux(io.func(4), logicAdv, logicBase))
+ }
+ 
+-// class ShiftResultSelect(implicit p: Parameters) extends XSModule {
+-class ShiftResultSelect extends Module {
++ class ShiftResultSelect(implicit p: Parameters) extends XSModule {
++//class ShiftResultSelect extends Module {
+   val io = IO(new Bundle() {
+     val func = Input(UInt(4.W))
+     val sll, srl, sra, rol, ror, bclr, bset, binv, bext = Input(UInt(XLEN.W))
+@@ -1901,8 +2164,8 @@ class ShiftResultSelect extends Module {
+   io.shiftRes := Mux(io.func(3), Mux(io.func(1), io.ror, io.rol), simple)
+ }
+ 
+-//class WordResultSelect(implicit p: Parameters) extends XSModule {
+-class WordResultSelect extends Module {
++class WordResultSelect(implicit p: Parameters) extends XSModule {
++//class WordResultSelect extends Module {
+   val io = IO(new Bundle() {
+     val func = Input(UInt())
+     val sllw, srlw, sraw, rolw, rorw, addw, subw = Input(UInt((XLEN/2).W))
+@@ -1916,63 +2179,199 @@ class WordResultSelect extends Module {
+   io.wordRes := SignExt(wordRes, XLEN)
+ }
+ 
+-//class capResultSelect(implicit p: Parameters) extends XSModule {
+-class capResultSelect extends Module {
++class capResultSelect(implicit p: Parameters) extends XSModule {
++//class capResultSelect extends Module {
+   val io = IO(new Bundle() {
+     val func = Input(UInt())
++
++  })
++
++    // val   crevoke,cshrink,ctighten,cdelin,clcc,cscc,csplit,cseal,cmrev,cinit,cmovc,cdrop,ccincoffset,
++    //       ccall,creturn,ccjalr,ccbnz,cccsrrw,ccapenter,ccincoffsetim,cshrinkto,ccreate,ctype,
++    //       cnode,cperm,cbound,cprint,cregprint,getrand,tagset,tagget= Input(UInt((XLEN).W))    
++    
+     val   crevoke,cshrink,ctighten,cdelin,clcc,cscc,csplit,cseal,cmrev,cinit,cmovc,cdrop,ccincoffset,
+           ccall,creturn,ccjalr,ccbnz,cccsrrw,ccapenter,ccincoffsetim,cshrinkto,ccreate,ctype,
+-          cnode,cperm,cbound,cprint,cregprint,getrand,tagset,tagget= Input(UInt((XLEN).W))
+-    val capRes = Output(UInt(XLEN.W))
+-  })
+- //val res=WireDefault(io.ccapenter)
++          cnode,cperm,cbound,cprint,cregprint,getrand,tagset,tagget= IO(Input(new cap_result_t))
++    // val capRes = Output(UInt(XLEN.W))
++    val capRes = IO(Output(new cap_result_t))
++
+ //val res
++  capRes.cap        := 0.U
++  capRes.tag        := 0.U 
++  capRes.valid      := 0.U
+ 
+-io.capRes:=io.crevoke
+   switch(io.func)
+   {
+  // is (0.U){res:=io.crevoke}
+  // is (1.U){res:=io.cshrink}
+  // is (3.U){res:=io.cdelin}
+  // is (4.U){res:=io.clcc}
+-  is (0.U){io.capRes:=io.crevoke}
+-  is (1.U){io.capRes:=io.cshrink}
+-  is (2.U){io.capRes:=io.ctighten}
+-  is (3.U){io.capRes:=io.cdelin}
+-  is (4.U){io.capRes:=io.clcc}
+-  is (5.U){io.capRes:=io.cscc}
+-  is (6.U){io.capRes:=io.csplit}
+-  is (7.U){io.capRes:=io.cseal}
+-  is (8.U){io.capRes:=io.cmrev}
+-  is (9.U){io.capRes:=io.cinit}
+-  is (10.U){io.capRes:=io.cmovc}
+-  is (11.U){io.capRes:=io.cdrop}
+-  is (12.U){io.capRes:=io.ccincoffset}
+-  is (13.U){io.capRes:=io.ccall}
+-  is (14.U){io.capRes:=io.creturn}
+-  is (15.U){io.capRes:=io.ccjalr}
+-  is (16.U){io.capRes:=io.ccbnz}
+-  is (17.U){io.capRes:=io.cccsrrw}
+-  is (18.U){io.capRes:=io.ccapenter}
+-  is (19.U){io.capRes:=io.ccincoffsetim}
+-  is (20.U){io.capRes:=io.cshrinkto}
+-  is (21.U){io.capRes:=io.ccreate}
+-  is (22.U){io.capRes:=io.ctype}
+-  is (23.U){io.capRes:=io.cnode}
+-  is (24.U){io.capRes:=io.cperm}
+-  is (25.U){io.capRes:=io.cbound}
+-  is (26.U){io.capRes:=io.cprint}
+-  is (27.U){io.capRes:=io.cregprint}
+-  is (28.U){io.capRes:=io.getrand}
+-  is (29.U){io.capRes:=io.tagset}
+-  is (30.U){io.capRes:=io.tagget}
++  is (0.U)
++   {
++    capRes.cap:=crevoke.cap
++    capRes.tag:=crevoke.tag
++    capRes.valid:=crevoke.valid
++    }
++  is (1.U){
++    capRes.cap:=cshrink.cap
++    capRes.tag:=cshrink.tag
++    capRes.valid:=cshrink.valid
++  
++  }
++  is (2.U){
++    capRes.cap:=ctighten.cap
++    capRes.tag:=ctighten.tag
++    capRes.valid:=ctighten.valid
++  }
++  is (3.U){
++    capRes.cap:=cdelin.cap
++    capRes.tag:=cdelin.tag
++    capRes.valid:=cdelin.valid
++  }    
++  is (4.U){
++    capRes.cap:=clcc.cap
++    capRes.tag:=clcc.tag
++    capRes.valid:=clcc.valid
++  }
++
++  is (5.U){
++    capRes.cap:=cscc.cap
++    capRes.tag:=cscc.tag
++    capRes.valid:=cscc.valid
++  }
++  is (6.U){
++    capRes.cap:=csplit.cap
++    capRes.tag:=csplit.tag
++    capRes.valid:=csplit.valid
++  }
++  is (7.U){
++    capRes.cap:=cseal.cap
++    capRes.tag:=cseal.tag
++    capRes.valid:=cseal.valid
++  }
++  is (8.U){
++    capRes.cap:=cmrev.cap
++    capRes.tag:=cmrev.tag
++    capRes.valid:=cmrev.valid
++  }
++  is (9.U){
++    capRes.cap:=cinit.cap
++    capRes.tag:=cinit.tag
++    capRes.valid:=cinit.valid
++  }
++  is (10.U){
++    capRes.cap:=cmovc.cap
++    capRes.tag:=cmovc.tag
++    capRes.valid:=cmovc.valid
++  }
++  is (11.U){
++    capRes.cap:=cdrop.cap
++    capRes.tag:=cdrop.tag
++    capRes.valid:=cdrop.valid
++  }    
++  is (12.U){
++    capRes.cap:=ccincoffset.cap
++    capRes.tag:=ccincoffset.tag
++    capRes.valid:=ccincoffset.valid
++  }
++  is (13.U){
++    capRes.cap:=ccall.cap
++    capRes.tag:=ccall.tag
++    capRes.valid:=ccall.valid
++  }    
++  is (14.U){
++    capRes.cap:=creturn.cap
++    capRes.tag:=creturn.tag
++    capRes.valid:=creturn.valid
++  }
++  is (15.U){
++    capRes.cap:=ccjalr.cap
++    capRes.tag:=ccjalr.tag
++    capRes.valid:=ccjalr.valid
++  }
++  is (16.U){
++    capRes.cap:=ccbnz.cap
++    capRes.tag:=ccbnz.tag
++    capRes.valid:=ccbnz.valid
++  }
++  is (17.U){
++    capRes.cap:=cccsrrw.cap
++    capRes.tag:=cccsrrw.tag
++    capRes.valid:=cccsrrw.valid
++  }  
++  is (18.U){
++    capRes.cap:=ccapenter.cap
++    capRes.tag:=ccapenter.tag
++    capRes.valid:=ccapenter.valid
++  }
++  is (19.U){
++    capRes.cap:=ccincoffsetim.cap
++    capRes.tag:=ccincoffsetim.tag
++    capRes.valid:=ccincoffsetim.valid  
++  }
++  is (20.U){
++    capRes.cap:=cshrinkto.cap
++    capRes.tag:=cshrinkto.tag
++    capRes.valid:=cshrinkto.valid
++  }  
++  is (21.U){
++    capRes.cap:=ccreate.cap
++    capRes.tag:=ccreate.tag
++    capRes.valid:=ccreate.valid
++  }  
++  is (22.U){
++    capRes.cap:=ctype.cap
++    capRes.tag:=ctype.tag
++    capRes.valid:=ctype.valid
++  }  
++  is (23.U){
++    capRes.cap:=cnode.cap
++    capRes.tag:=cnode.tag
++    capRes.valid:=cnode.valid
++  }  
++  is (24.U){
++    capRes.cap:=cperm.cap
++    capRes.tag:=cperm.tag
++    capRes.valid:=cperm.valid
++  }  
++  is (25.U){
++    capRes.cap:=cbound.cap
++    capRes.tag:=cbound.tag
++    capRes.valid:=cbound.valid
++  }  
++  is (26.U){
++    capRes.cap:=cprint.cap
++    capRes.tag:=cprint.tag
++    capRes.valid:=cprint.valid
++  }  
++  is (27.U){
++    capRes.cap:=cregprint.cap
++    capRes.tag:=cregprint.tag
++    capRes.valid:=cregprint.valid
++  }  
++  is (28.U){
++    capRes.cap:=getrand.cap
++    capRes.tag:=getrand.tag
++    capRes.valid:=getrand.valid
++  }  
++  is (29.U){
++    capRes.cap:=tagset.cap
++    capRes.tag:=tagset.tag
++    capRes.valid:=tagset.valid
++  }  
++  is (30.U){
++    capRes.cap:=tagget.cap
++    capRes.tag:=tagget.tag
++    capRes.valid:=tagget.valid
++  }  
+   //is (31.U){io.capRes:=SignExt(io.sdd, XLEN)}
+   }
+ 
+   // io.capRes := res// SignExt(res, XLEN)
+    //io.capRes:=SignExt(io.ccapenter, XLEN)
+   //printf("instruction code in capstone 1 what")  
+- // XSDebug("instruction in alu capstone_select =%b\n",io.func)
++  XSDebug("instruction in alu capstone_select =%b\n",io.func)
+ 
+ }
+ 
+@@ -2017,17 +2416,17 @@ io.capRes:=io.crevoke
+   io.aluRes := res
+ 
+   //printf("instruction in aluresselect is capstone print")  
+-  //XSDebug("instruction is capstone aluresselect=%b\n",io.func)
+-//  Debug("instruction is capstone aluresselect=%b\n",io.func)
++  XSDebug("instruction is aluresselect=%b\n",io.func)
+   
+ }
+ 
+ //capstone//mlabaf
+-// class AluResSel(implicit p: Parameters) extends XSModule {
+-class AluCapResSel extends Module {
++ class AluCapResSel(implicit p: Parameters) extends XSModule {
++//class AluCapResSel extends Module {
+   val io = IO(new Bundle() {
+   //  val func = Input(UInt(3.W))
+-    val func = Input(UInt(4.W))
++    // val func = Input(UInt(4.W))
++    val func = Input(UInt(9.W))
+   //  val addRes, shiftRes, miscRes, compareRes, wordRes = Input(UInt(XLEN.W))
+     val capRes = Input (new cap_result_t)
+     val AluRes = Input(UInt(XLEN.W))
+@@ -2041,16 +2440,21 @@ class AluCapResSel extends Module {
+ 
+   //val res = Mux(io.func(2, 1) === 0.U, Mux(io.func(0), io.wordRes, io.shiftRes),
+   //          Mux(!io.func(2), Mux(io.func(0), io.compareRes, io.addRes), io.miscRes))
+-  val Res      = Mux(io.func(3),io.capRes.cap,io.AluRes)
+-  val ResValid = Mux(io.func(3),io.capRes.valid,0.U)
+-  val ResTag   = Mux(io.func(3),io.capRes.tag,0.U)
++  // val Res      = Mux(io.func(3),io.capRes.cap,io.AluRes)
++  // val ResValid = Mux(io.func(3),io.capRes.valid,0.U)
++  // val ResTag   = Mux(io.func(3),io.capRes.tag,0.U)
++
++  val Res      = Mux(io.func(7),io.capRes.cap,io.AluRes)
++  val ResValid = Mux(io.func(7),io.capRes.valid,0.U)
++  val ResTag   = Mux(io.func(7),io.capRes.tag,0.U)
+ 
+   io.ExRes := Res
+   io.ExResValid := ResValid
+   io.ExResTag := ResTag
+ 
+   //printf("instruction in aluresselect is capstone print")  
+-  //XSDebug("instruction is capstone aluresselect=%b\n",io.func)
++ // XSDebug("instruction is capstone aluresselect=%b\n",io.func)
++ XSDebug("AluCapResSel =%b\n",io.func)
+ //  Debug("instruction is capstone aluresselect=%b\n",io.func)
+   
+ }
+@@ -2058,7 +2462,8 @@ class AluCapResSel extends Module {
+ 
+ 
+ //Capstone//mlabaf
+- class CapExeModule extends Module {
++ class CapExeModule(implicit p: Parameters) extends XSModule {
++//  class CapExeModule extends Module {
+   val io = IO(new Bundle() {
+   val func = Input(FuOpType())
+   val operand_a =Input( UInt (XLEN.W))
+@@ -2097,12 +2502,9 @@ class AluCapResSel extends Module {
+ 
+ 
+ 
+-  val crevokeModule = Module(new crevokeModule2)
++  val crevokeModule = Module(new crevokeModule)
+   val crevoke  = crevokeModule.crevoke
+-     crevokeModule.src := src
+-  // io.rd_result_ot              := crevokeModule.io.rd_result_o
+-  // crevokeModule.io.src := 0.U
+-
++  crevokeModule.src := src
+ 
+   val cshrinkModule = Module(new cshrinkModule)
+   // cshrinkModule.io.src :=  src1(31, 0)
+@@ -2204,39 +2606,39 @@ class AluCapResSel extends Module {
+   // Result capstone//mlabaf//capstone
+   val capResSel = Module(new capResultSelect)
+   capResSel.io.func := io.func(6, 0)
+-  capResSel.io.crevoke  := crevoke
+-  capResSel.io.cshrink  := cshrink
+-  capResSel.io.ctighten  := ctighten
+-  capResSel.io.cdelin  := cdelin
+-  capResSel.io.clcc  := clcc
+-  capResSel.io.cscc := cscc
+-  capResSel.io.csplit := csplit
+-  capResSel.io.cseal := cseal
+-  capResSel.io.cmrev := cmrev
+-  capResSel.io.cinit  := cinit
+-  capResSel.io.cmovc  := cmovc
+-  capResSel.io.cdrop  := cdrop
+-  capResSel.io.ccincoffset  := ccincoffset
+-  capResSel.io.ccall  := ccall
+-  capResSel.io.creturn := creturn
+-  capResSel.io.ccjalr := ccjalr
+-  capResSel.io.ccbnz := ccbnz
+-  capResSel.io.cccsrrw := cccsrrw
+-  capResSel.io.ccapenter  := ccapenter
+-  capResSel.io.ccincoffsetim  := ccincoffsetim
+-  capResSel.io.cshrinkto  := cshrinkto
+-  capResSel.io.ccreate := ccreate
+-  capResSel.io.ctype := ctype
+-  capResSel.io.cnode := cnode
+-  capResSel.io.cperm := cperm
+-  capResSel.io.cbound  := cbound
+-  capResSel.io.cprint  := cprint
+-  capResSel.io.cregprint := cregprint
+-  capResSel.io.getrand := getrand
+-  capResSel.io.tagset := tagset
+-  capResSel.io.tagget := tagget
++  capResSel.crevoke  := crevoke
++  capResSel.cshrink  := cshrink
++  capResSel.ctighten  := ctighten
++  capResSel.cdelin  := cdelin
++  capResSel.clcc  := clcc
++  capResSel.cscc := cscc
++  capResSel.csplit := csplit
++  capResSel.cseal := cseal
++  capResSel.cmrev := cmrev
++  capResSel.cinit  := cinit
++  capResSel.cmovc  := cmovc
++  capResSel.cdrop  := cdrop
++  capResSel.ccincoffset  := ccincoffset
++  capResSel.ccall  := ccall
++  capResSel.creturn := creturn
++  capResSel.ccjalr := ccjalr
++  capResSel.ccbnz := ccbnz
++  capResSel.cccsrrw := cccsrrw
++  capResSel.ccapenter  := ccapenter
++  capResSel.ccincoffsetim  := ccincoffsetim
++  capResSel.cshrinkto  := cshrinkto
++  capResSel.ccreate := ccreate
++  capResSel.ctype := ctype
++  capResSel.cnode := cnode
++  capResSel.cperm := cperm
++  capResSel.cbound  := cbound
++  capResSel.cprint  := cprint
++  capResSel.cregprint := cregprint
++  capResSel.getrand := getrand
++  capResSel.tagset := tagset
++  capResSel.tagget := tagget
+   // val capRes = capResSel.io.capRes
+-   capRes := capResSel.io.capRes
++   capRes := capResSel.capRes
+ 
+ 
+  }
+@@ -2285,9 +2687,6 @@ class AluCapResSel extends Module {
+    // fu_data_curt := 0.U.asTypeOf(chiselTypeOf(fu_data_t))
+ 
+   val (src1, src2, func) = (io.src(0), io.src(1), io.func)
+-  // val fu_data_curtt = fu_data_curt
+-  //val fu_data_curtt = io.fu_data_curt
+-  // val fu_data_cur  = Module(new fu_data_t)
+ 
+   val shamt = src2(5, 0)
+   val revShamt = ~src2(5,0) + 1.U
+@@ -2413,111 +2812,6 @@ class AluCapResSel extends Module {
+   )
+   val taken = LookupTree(ALUOpType.getBranchType(func), branchOpTable) ^ ALUOpType.isBranchInvert(func)
+ 
+-// //Capstone//mlabaf
+-//   // val crevokeModule = Module(new crevokeModule(new typ))
+-//    //val crevokeModule = Module(new crevokeModule(new cap_result_t))
+-//   val crevokeModule = Module(new crevokeModule)
+-//   crevokeModule.io.src         := src1(31, 0)//input
+-//   val crevoke                   = crevokeModule.io.crevoke
+-//   // crevokeModule.io.fu_data_cur := io.fu_data_curt
+-//    // crevokeModule.io.fu_data_cur := fu_data_curtt//input
+-//   // crevokeModule.fu_data_cur := fu_data_curtt//input
+-//   // io.rd_result_ot              := crevokeModule.io.rd_result_o
+-//   //rd_result_ot              := crevokeModule.io.rd_result_o
+-//   //val rd_result_ot             = crevokeModule.io.rd_result_o
+-
+-  // val cshrinkModule = Module(new cshrinkModule)
+-  // cshrinkModule.io.src :=  src1(31, 0)
+-  // val cshrink =  cshrinkModule.io.cshrink  
+-  // val ctightenModule = Module(new ctightenModule)
+-  // ctightenModule.io.src :=  src1(31, 0)
+-  // val ctighten =  ctightenModule.io.ctighten  
+-  // val cdelinvModule  = Module(new cdelinModule)
+-  // cdelinvModule.io.src :=  src1(31, 0)
+-  // val cdelin =  cdelinvModule.io.cdelin  
+-  // val clccModule    = Module(new clccModule)
+-  // clccModule.io.src :=  src1(31, 0)
+-  // val clcc =  clccModule.io.clcc   
+-  // val csccModule    = Module(new csccModule)
+-  // csccModule.io.src :=  src1(31, 0)
+-  // val cscc =  csccModule.io.cscc
+-  // val csplitModule  = Module(new csplitModule)
+-  // csplitModule.io.src :=  src1(31, 0)
+-  // val csplit =  csplitModule.io.csplit
+-  // val csealModule   = Module(new csealModule)
+-  // csealModule.io.src :=  src1(31, 0)
+-  // val cseal =  csealModule.io.cseal 
+-  // val cmrevModule   = Module(new cmrevModule)
+-  // cmrevModule.io.src :=  src1(31, 0)
+-  // val cmrev =  cmrevModule.io.cmrev 
+-  // val cinitModule   = Module(new cinitModule)
+-  // cinitModule.io.src :=  src1(31, 0)
+-  // val cinit =  cinitModule.io.cinit 
+-  // val cmovcModule   = Module(new cmovcModule)
+-  // cmovcModule.io.src :=  src1(31, 0)
+-  // val cmovc =  cmovcModule.io.cmovc 
+-  // val cdropModule   = Module(new cdropModule)
+-  // cdropModule.io.src :=  src1(31, 0)
+-  // val cdrop =  cdropModule.io.cdrop 
+-  // val ccincoffsetModule = Module(new ccincoffsetModule)
+-  // ccincoffsetModule.io.src :=  src1(31, 0)
+-  // val ccincoffset =  ccincoffsetModule.io.ccincoffset 
+-  // val ccallModule   = Module(new ccallModule)
+-  // ccallModule.io.src :=  src1(31, 0)
+-  // val ccall =  ccallModule.io.ccall   
+-  // val creturnModule = Module(new creturnModule)
+-  // creturnModule.io.src :=  src1(31, 0)
+-  // val creturn =  creturnModule.io.creturn  
+-  // val ccjalrModule  = Module(new ccjalrModule)
+-  // ccjalrModule.io.src :=  src1(31, 0)
+-  // val ccjalr =  ccjalrModule.io.ccjalr   
+-  // val ccbnzModule   = Module(new ccbnzModule)
+-  // ccbnzModule.io.src :=  src1(31, 0)
+-  // val ccbnz =  ccbnzModule.io.ccbnz   
+-  // val cccsrrwModule = Module(new cccsrrwModule)
+-  // cccsrrwModule.io.src :=  src1(31, 0)
+-  // val cccsrrw =  cccsrrwModule.io.cccsrrw  
+-  // val ccapenterModule = Module(new ccapenterModule)
+-  // ccapenterModule.io.src :=  src1(31, 0)
+-  // val ccapenter =  ccapenterModule.io.ccapenter   
+-  // val ccincoffsetimModule = Module(new ccincoffsetimModule)
+-  // ccincoffsetimModule.io.src :=  src1(31, 0)
+-  // val ccincoffsetim =  ccincoffsetimModule.io.ccincoffsetim  
+-  // val cshrinktoModule = Module(new cshrinktoModule)
+-  // cshrinktoModule.io.src :=  src1(31, 0)
+-  // val cshrinkto =  cshrinktoModule.io.cshrinkto   
+-  // val ccreateModule   = Module(new ccreateModule)
+-  // ccreateModule.io.src :=  src1(31, 0)
+-  // val ccreate =  ccreateModule.io.ccreate   
+-  // val ctypeModule     = Module(new ctypeModule)
+-  // ctypeModule.io.src :=  src1(31, 0)
+-  // val ctype =  ctypeModule.io.ctype  
+-  // val cnodeModule     = Module(new cnodeModule)
+-  // cnodeModule.io.src :=  src1(31, 0)
+-  // val cnode =  cnodeModule.io.cnode  
+-  // val cpermModule     = Module(new cpermModule)
+-  // cpermModule.io.src :=  src1(31, 0)
+-  // val cperm =  cpermModule.io.cperm   
+-  // val cboundModule    = Module(new cboundModule)
+-  // cboundModule.io.src :=  src1(31, 0)
+-  // val cbound =  cboundModule.io.cbound   
+-  // val cprintModule    = Module(new cprintModule)
+-  // cprintModule.io.src :=  src1(31, 0)
+-  // val cprint =  cprintModule.io.cprint 
+-  // val cregprintModule = Module(new cregprintModule)
+-  // cregprintModule.io.src :=  src1(31, 0)
+-  // val cregprint =  cregprintModule.io.cregprint 
+-  // val getrandModule   = Module(new getrandModule)
+-  // getrandModule.io.src :=  src1(31, 0)
+-  // val getrand =  getrandModule.io.getrand
+-  // val tagsetModule  = Module(new tagsetModule)
+-  // tagsetModule.io.src :=  src1(31, 0)
+-  // val tagset =  tagsetModule.io.tagset
+-  // val taggetModule  = Module(new taggetModule)
+-  // taggetModule.io.src :=  src1(31, 0)
+-  // val tagget =  taggetModule.io.tagget
+-
+-
+ 
+   // Result Select
+   val shiftResSel = Module(new ShiftResultSelect)
+@@ -2616,95 +2910,6 @@ class AluCapResSel extends Module {
+  // printf("instruction code in alu what")  
+  // XSDebug("aluResSel in AluDataModule=%b\n",aluResSel.io.func)
+ }
+-//mlabaf//capstone
+-// class Alu(implicit p: Parameters) extends FUWithRedirect {
+-// class CapAlu(implicit p: Parameters) extends CapFUWithRedirect {
+-
+-//   val uop = io.in.bits.uop
+-
+-//   val isBranch = ALUOpType.isBranch(io.in.bits.uop.ctrl.fuOpType)
+-//   // val dataModule = Module(new AluDataModule(new typ))
+-//   // val dataModule = Module(new AluDataModule(new cap_result_t))
+-//   // val dataModule = Module(new AluDataModule( ))
+-//   val dataModule = Module(new AluDataModule)
+-
+-//   //dataModule.io.src := io.in.bits.src.take(2)
+-//   dataModule.io.func := io.in.bits.uop.ctrl.fuOpType
+-//   dataModule.io.pred_taken := uop.cf.pred_taken
+-//   dataModule.io.isBranch := isBranch
+-//  // dataModule.fu_data_curt.operand_a  := 0.U(XLEN.W)
+-//  // dataModule.fu_data_curt.operand_b  := 0.U(XLEN.W)
+-//   //dataModule.fu_data_curt.imm        := 0.U(XLEN.W)
+-//  // dataModule.fu_data_curt.cap_a      := 0.U(XLEN.W)
+- 
+-
+-
+-//   val CapEModule = Module(new CapExeModule)
+-//   //CapEModule.io.src := io.in.bits.src.take(2)
+-//   CapEModule.io.func := io.in.bits.uop.ctrl.fuOpType
+-
+-
+-//   val ResSel = Module(new AluCapResSel)
+-//   ResSel.io.func := io.in.bits.uop.ctrl.fuOpType
+-//   ResSel.io.capRes := CapEModule.capRes
+-//   ResSel.io.AluRes := dataModule.io.result
+-
+-//   redirectOutValid := io.out.valid && isBranch
+-//   redirectOut := DontCare
+-//   redirectOut.level := RedirectLevel.flushAfter
+-//   redirectOut.robIdx := uop.robIdx
+-//   redirectOut.ftqIdx := uop.cf.ftqPtr
+-//   redirectOut.ftqOffset := uop.cf.ftqOffset
+-//   redirectOut.cfiUpdate.isMisPred := dataModule.io.mispredict
+-//   redirectOut.cfiUpdate.taken := dataModule.io.taken
+-//   redirectOut.cfiUpdate.predTaken := uop.cf.pred_taken
+-
+-//   io.in.ready := io.out.ready
+-//   io.out.valid := io.in.valid
+-//   io.out.bits.uop <> io.in.bits.uop
+-//   // io.out.bits.data := dataModule.io.result
+-//   io.out.bits.data := ResSel.io.ExRes
+-
+-// // if (dataModule.io.func==="b010010010")
+-// //    printf("instruction code in alu is: CAPENTER")
+-//   switch(dataModule.io.func)
+-//   {
+-//     is (128.U){ printf("instruction code in alu is: crevoke")}
+-//     is (129.U){ printf("instruction code in alu is: cshrink")}
+-//     is (130.U){ printf("instruction code in alu is: ctighten")}
+-//     is (131.U){ printf("instruction code in alu is: cdelin")}
+-//     is (132.U){ printf("instruction code in alu is: clcc")}
+-//     is (133.U){ printf("instruction code in alu is: cscc")}
+-//     is (134.U){ printf("instruction code in alu is: csplit")}
+-//     is (135.U){ printf("instruction code in alu is: cseal")}
+-//     is (136.U){ printf("instruction code in alu is: cmrev")}
+-//     is (137.U){ printf("instruction code in alu is: cinit")}
+-//     is (138.U){ printf("instruction code in alu is: cmovc")}
+-//     is (139.U){ printf("instruction code in alu is: cdrop")}        
+-//     is (140.U){ printf("instruction code in alu is: ccincoffset")}    
+-//     is (141.U){ printf("instruction code in alu is: ccall")}    
+-//     is (142.U){ printf("instruction code in alu is: creturn")}    
+-//     is (143.U){ printf("instruction code in alu is: ccjalr")}    
+-//     is (144.U){ printf("instruction code in alu is: ccbnz")}    
+-//     is (145.U){ printf("instruction code in alu is: cccsrrw")}    
+-//     is (146.U){ printf("instruction code in alu is: ccapenter")}
+-//     is (147.U){ printf("instruction code in alu is: ccincoffsetim")}    
+-//     is (148.U){ printf("instruction code in alu is: cshrinkto")}    
+-//     is (149.U){ printf("instruction code in alu is: ccreate")}      
+-//     is (150.U){ printf("instruction code in alu is: ctype")}      
+-//     is (151.U){ printf("instruction code in alu is: cnode")}    
+-//     is (152.U){ printf("instruction code in alu is: cperm")}    
+-//     is (153.U){ printf("instruction code in alu is: cbound")}    
+-//     is (154.U){ printf("instruction code in alu is: cprint")}    
+-//     is (155.U){ printf("instruction code in alu is: cregprint")}    
+-//     is (156.U){ printf("instruction code in alu is: getrand")}    
+-//     is (157.U){ printf("instruction code in alu is: tagset")}    
+-//     is (158.U){ printf("instruction code in alu is: tagget")}    
+-//    // is (159.U){ printf("instruction code in alu is: sdd")}    
+-      
+-//   }
+-//   XSDebug("instruction in alu class=%b\n",dataModule.io.func)
+-// }
+ 
+ 
+ class Alu(implicit p: Parameters) extends FUWithRedirect {
+@@ -2713,10 +2918,10 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+ 
+   val isBranch = ALUOpType.isBranch(io.in.bits.uop.ctrl.fuOpType)
+   val dataModule = Module(new AluDataModule)
+-  dataModule.io.src := io.in.bits.src.take(2)
++  dataModule.io.src  := io.in.bits.src.take(2)
+   dataModule.io.func := io.in.bits.uop.ctrl.fuOpType
+   dataModule.io.pred_taken := uop.cf.pred_taken
+-  dataModule.io.isBranch := isBranch
++  dataModule.io.isBranch   := isBranch
+ 
+ 
+     // val fu_data_t_in = io.in.bits.CapSrc//Wire(new fu_data_t)
+@@ -2794,17 +2999,17 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+   redirectOut.cfiUpdate.taken := dataModule.io.taken
+   redirectOut.cfiUpdate.predTaken := uop.cf.pred_taken
+ 
+-  io.in.ready := io.out.ready
+-  io.out.valid := io.in.valid
++  io.in.ready  := io.out.ready
+   io.out.bits.uop <> io.in.bits.uop
+ //  io.out.bits.data := dataModule.io.result
+   io.out.bits.data := ResSel.io.ExRes
+-  io.out.bits.tag := ResSel.io.ExResTag
+-  io.out.bits.valid := ResSel.io.ExResValid
++  io.out.bits.tag  := ResSel.io.ExResTag
++  io.out.bits.valid:= ResSel.io.ExResValid
+ 
+ //if (dataModule.io.func==="b010010010")
+   switch(dataModule.io.func)
+   {
++    is (64.U){ printf("instruction code in alu is: and")}
+     is (128.U){ printf("instruction code in alu is: crevoke")}
+     is (129.U){ printf("instruction code in alu is: cshrink")}
+     is (130.U){ printf("instruction code in alu is: ctighten")}
+@@ -2839,5 +3044,96 @@ class Alu(implicit p: Parameters) extends FUWithRedirect {
+    // is (159.U){ printf("instruction code in alu is: sdd")}    
+       
+   }
+-  XSDebug("instruction in alu class=%b\n",dataModule.io.func)
++  XSDebug("instruction in alu class1=%b\n",dataModule.io.func)
++  XSDebug("instruction in alu class2=%b\n",io.in.bits.uop.ctrl.fuOpType)
++
++////////////////////////////////////////////for test// cpmpression and uncompression function///////////////////////////
++   val rs1_cc = Reg(new cap_cc_t)
++   val rs1_c  = Reg(new cap_fat_t) 
++   val cap_uncompress_cap = Module(new cap_uncompress)
++   val cap_compress_cap   = Module(new cap_compress)
++   val rs2_c  = Reg(new cap_fat_t) 
++   rs1_c.bounds.cursor:=1400.U//"h00df000000121400".U
++   rs1_c.bounds.base  :=1000.U//"h00df000000121000".U
++   rs1_c.bounds.top   :=2000.U//"h00df000000122000".U
++           
++   rs1_c.reg_id:= 3.U
++   rs1_c.async:= 1.U
++   rs1_c.padding:=0.U
++   rs1_c.meta.ty:= cap_type_t.CAP_TYPE_REVOKE
++   rs1_c.meta.perm:= cap_perm_t.CAP_PERM_RWX
++            
++   rs1_c.renode_id:=12.U
++
++   cap_compress_cap.cap_fat.bounds.cursor:=rs1_c.bounds.cursor
++   cap_compress_cap.cap_fat.bounds.base  :=rs1_c.bounds.base
++   cap_compress_cap.cap_fat.bounds.top   :=rs1_c.bounds.top
++   cap_compress_cap.cap_fat.renode_id   :=rs1_c.renode_id
++   cap_compress_cap.cap_fat.reg_id:=rs1_c.reg_id
++   cap_compress_cap.cap_fat.async:=rs1_c.async
++   cap_compress_cap.cap_fat.padding:=rs1_c.padding
++   cap_compress_cap.cap_fat.meta.ty:=rs1_c.meta.ty
++   cap_compress_cap.cap_fat.meta.perm:=rs1_c.meta.perm
++   cap_compress_cap.cap_fat.renode_id:=rs1_c.renode_id
++
++   rs1_cc.bounds.iE:= cap_compress_cap.cap_cc.bounds.iE
++   rs1_cc.bounds.t:= cap_compress_cap.cap_cc.bounds.t
++   rs1_cc.bounds.tE:= cap_compress_cap.cap_cc.bounds.tE
++   rs1_cc.bounds.b:= cap_compress_cap.cap_cc.bounds.b
++   rs1_cc.bounds.bE:= cap_compress_cap.cap_cc.bounds.bE
++   rs1_cc.bounds.cursor := cap_compress_cap.cap_cc.bounds.cursor
++   rs1_cc.meta.ty:= cap_compress_cap.cap_cc.meta.ty
++   rs1_cc.meta.perm:= cap_compress_cap.cap_cc.meta.perm
++   rs1_cc.renode_id:= cap_compress_cap.cap_cc.renode_id
++
++   printf("cap_compress function in revoke")    
++  //  XSDebug("data is in compress=  -%b -%b -%b -\n",rs1_cc.renode_id, rs1_cc.meta.ty, rs1_cc.meta.perm)
++   XSDebug("data is in ucompress1 renode_id=  %b\n",rs1_c.renode_id)
++   XSDebug("data is in ucompress2 meta.ty=  %b\n", rs1_c.meta.ty)
++   XSDebug("data is in ucompress3 bounds.top=  %b\n",rs1_c.bounds.top)
++   XSDebug("data is in ucompress4 bounds.cursor=  %b\n", rs1_c.bounds.cursor)
++   XSDebug("data is in ucompress5 bounds.base=  %b\n",rs1_c.bounds.base)
++
++   XSDebug("data is in compress1 cursor=  %b\n",rs1_cc.bounds.cursor)
++   XSDebug("data is in compress2 iE=  %b \n",rs1_cc.bounds.iE)
++   XSDebug("data is in compress3 t=  %b \n", rs1_cc.bounds.t)
++   XSDebug("data is in compress4 tE=  %b \n", rs1_cc.bounds.tE)
++   XSDebug("data is in compress5 b=  %b \n", rs1_cc.bounds.b )
++   XSDebug("data is in compress6 bE=  %b \n", rs1_cc.bounds.bE)
++
++   cap_uncompress_cap.cap_cc.bounds.iE:=rs1_cc.bounds.iE
++   cap_uncompress_cap.cap_cc.bounds.t:=rs1_cc.bounds.t
++   cap_uncompress_cap.cap_cc.bounds.tE:=rs1_cc.bounds.tE
++   cap_uncompress_cap.cap_cc.bounds.b:=rs1_cc.bounds.b
++   cap_uncompress_cap.cap_cc.bounds.bE:=rs1_cc.bounds.bE   
++   cap_uncompress_cap.cap_cc.bounds.cursor:=rs1_cc.bounds.cursor
++   cap_uncompress_cap.cap_cc.meta.ty:=rs1_cc.meta.ty
++   cap_uncompress_cap.cap_cc.meta.perm:=rs1_cc.meta.perm
++   cap_uncompress_cap.cap_cc.renode_id:=rs1_cc.renode_id
++   
++   rs2_c.bounds.base := cap_uncompress_cap.cap_fat.bounds.base
++   rs2_c.bounds.top := cap_uncompress_cap.cap_fat.bounds.top
++   rs2_c.bounds.cursor := cap_uncompress_cap.cap_fat.bounds.cursor   
++   rs2_c.renode_id := cap_uncompress_cap.cap_fat.renode_id
++   rs2_c.reg_id := cap_uncompress_cap.cap_fat.reg_id
++   rs2_c.async:= cap_uncompress_cap.cap_fat.async
++   rs2_c.padding:= cap_uncompress_cap.cap_fat.padding
++   rs2_c.meta.perm:= cap_uncompress_cap.cap_fat.meta.perm
++   rs2_c.meta.ty:= cap_uncompress_cap.cap_fat.meta.ty
++
++   printf("cap_uncompress function in revoke")   
++   XSDebug("data is in uncompress_F1 bounds.cursor=%b\n",cap_uncompress_cap.cap_fat.bounds.cursor)
++   XSDebug("data is in uncompress_F2 bounds.base=%b\n",cap_uncompress_cap.cap_fat.bounds.base)
++   XSDebug("data is in uncompress_F3 bounds.top=%b\n",cap_uncompress_cap.cap_fat.bounds.top)
++   XSDebug("data is in uncompress_F4 reg_id=%b\n",rs2_c.reg_id)
++
++  //  XSDebug("data is in uncompress=%b, %b, %b, %b, %b, %b, \n",rs2_c.bounds.cursor, rs2_c.bounds.base , rs2_c.bounds.top ,rs2_c.reg_id,rs2_c.async, rs1_c.meta.ty )
++   XSDebug("data is in uncompress_F5 bounds.cursor=%b\n",rs2_c.bounds.cursor)
++   XSDebug("data is in uncompress_F6 bounds.base=%b\n",rs2_c.bounds.base)
++   XSDebug("data is in uncompress_F7 bounds.top=%b\n",rs2_c.bounds.top)
++   XSDebug("data is in uncompress_F8 reg_id=%b\n",rs2_c.reg_id)
++   
++
++///end test
++  
+ }
+diff --git a/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala b/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
+index 8e0707031..8d9ca3203 100644
+--- a/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
++++ b/src/main/scala/xiangshan/backend/fu/FunctionUnit.scala
+@@ -64,8 +64,8 @@ case class FuConfig
+ 
+ class FuOutput(val len: Int)(implicit p: Parameters) extends XSBundle {
+   val data = UInt(len.W)
+-  val dataL = Vec(2, UInt(len.W))//2*64=128// for capstone result//mlabaf
+   val uop = new MicroOp
++  //val dataL = Vec(2, UInt(len.W))//2*64=128// for capstone result//mlabaf
+   val tag   = UInt (1.W)// for capstone result//mlabaf
+   val valid = UInt (1.W)// for capstone result//mlabaf
+   // val CapSrc  = new cap_result_t //mlabaf//capstone
+@@ -100,6 +100,11 @@ class FunctionUnitIO(val len: Int)(implicit p: Parameters) extends XSBundle {
+ 
+ abstract class FunctionUnit(len: Int = 64)(implicit p: Parameters) extends XSModule {
+   val io = IO(new FunctionUnitIO(len))
++//mlabaf//capstone
++ // io <>DontCare
++ io.in:=DontCare
++ io.out:=DontCare
++
+   XSPerfAccumulate("in_valid", io.in.valid)
+   XSPerfAccumulate("in_fire", io.in.fire)
+   XSPerfAccumulate("out_valid", io.out.valid)
+diff --git a/src/main/scala/xiangshan/package.scala b/src/main/scala/xiangshan/package.scala
+index 463ecf195..80b626446 100644
+--- a/src/main/scala/xiangshan/package.scala
++++ b/src/main/scala/xiangshan/package.scala
+@@ -26,17 +26,56 @@ import xiangshan.backend.Std
+ 
+ package object xiangshan {
+ 
++/////////////////////////////////////////////////////////Capstone object begin////////////////////////////////////
+   //mlabaf//capstone
++   ////////////////////////////////////////////////////////////////////////////////////////////
++
++   // ---------------
++  // Node unit
++  // ---------------
++  object node_mut_type_t{
++    def NODE_INC    = "b0000".U
++    def NODE_DEC    = "b0001".U
++    def NODE_MREV   = "b0010".U
++    def NODE_REVOKE = "b0011".U
++    def NODE_SPLIT  = "b0100".U
++    def NODE_DELIN  = "b0101".U
++    def NODE_INIT   = "b0110".U // initialise the revocation tree
++    def NODE_CREATE = "b0111".U// directly create a new valid node (useful for debugging)
++   }
++
++    object mut_t {
++    def NODE_ALLOC_IDLE = "b00".U
++    def NODE_ALLOC_SENT = "b01".U
++    def NODE_ALLOC_RECEIVED = "b10".U
++  }
++
++def TRANS_ID_BITS = 128//?  //TODO
++  ////////////////////////////////////////////////////////////////////cap _ node///////////////////////
++  
++ 
++
+   object option_type_t{
+     def OPTION_TYPE_INVALID  = "b0".U
+     def OPTION_TYPE_VALID    = "b1".U
+   }
+ 
++  // object cap_renode_id_t{
++  //   def va  = "b0".U
++  // }
++
++  //   object CAP_REVNODE_ID_NULL{
++  //   def va = "b0".U
++  // }
++
++  def cap_renode_id_t= UInt(31.W)//Vec (31,Bool())
++  def CAP_REVNODE_ID_NULL= UInt(31.W)//Vec (31,Bool())
++
+  //mlabaf//capstone 
+  def CLEN     = 128 // TODO: we assume XLEN==64
+  def CLENBYTES = CLEN / 8
+  //def clen_t()=vec(CLEN,Bool())
+- def clen_t = "x00000000000000000000000000000000".U
++ //def clen_t = UInt (CLEN.W)
+  def XLEN     = 64
+   //mlabaf//capstone
+   object cap_type_t{
+@@ -70,68 +109,6 @@ package object xiangshan {
+     def  CAP_ASYNC_INT    = "b10".U 
+   }
+ 
+-  //mlabaf//capstone
+-  class cap_metadata_t extends Bundle{
+-//  class cap_metadata_t extends module{
+-    val ty   = UInt(3.W) //new cap_type_t() // ;    // 3 bits
+-    val perm = UInt(3.W)//new cap_perm_t() // ;  // 3 bits
+-  }// extra metadata, 6 bits
+-
+-  def cap_revnode_id_t= UInt(31.W)//Vec (31,Bool())
+-  val CAP_REVNODE_ID_NULL= UInt(31.W)//Vec (31,Bool())
+-///////////////////////////////////cap_fat/////////////////////////////////////
+-  class cap_fat_bounds_t extends Bundle {
+-//  class cap_fat_bounds_t extends Module {
+-/*    val io = IO(new Bundle() {
+-    val top    =Input( UInt ())
+-    val base   = Input(UInt ())
+-    val cursor = Input(UInt ()) 
+-  })//3*64 bits */
+-    val top    =UInt(64.W)//(Vec(64,Bool())) 
+-    val base   =UInt(64.W)//(Vec(64,Bool())) 
+-    val cursor =UInt(64.W)//(Vec(64,Bool()))  
+-}
+-  //val leftShiftModule = Module(new LeftShiftModule)
+-
+-  // not including the tag bit
+-  class cap_fat_t  extends Bundle{
+-    val revnode_id  = cap_revnode_id_t// 31 bits
+-    val meta   = new cap_metadata_t() // 6 bits
+-    val reg_id = UInt(5.W)//(Vec(5,Bool()))// 5 bits
+-    val async  = UInt(1.W)//Bool   // 1 bit
+-    val padding= UInt(21.W)//Vec(21,Bool()) // 21 bits
+-    val bounds = new cap_fat_bounds_t()  // 64 * 3 bits
+-   } // fat 256-bit capability
+-///////////////////////////////////cap_cc//////////////////////////////////////////////
+-    // low to high
+-    // the raw bit representation of a compressed bound
+-    // 27 bits + cursor
+-  class cap_cc_bounds_t extends Bundle{
+-//  class cap_cc_bounds_t extends Module{
+-  //  val io = IO(new Bundle() {
+- /*   val iE    = Input (Bool())
+-    val t     = Input (Vec(9,Bool())) // 21 bits
+-    val tE    = Input (Vec(3,Bool())) // 21 bits
+-    val b     = Input (Vec(11,Bool())) // 21 bits
+-    val bE    = Input (Vec(3,Bool())) // 21 bits
+-    val cursor= Input (UInt ()) // 21 bits
+-    })*/
+-    val iE    = UInt(1.W)//(Bool())
+-    val t     = UInt (9.W) //(Vec(9,Bool())) 
+-    val tE    = UInt (3.W)//(Vec(3,Bool())) 
+-    val b     = UInt (11.W)//(Vec(11,Bool())) 
+-    val bE    = UInt (3.W)//(Vec(3,Bool())) 
+-    val cursor= UInt (XLEN.W)//(Vec(XLEN,Bool())) 
+-  }
+-// compressed 128-bit capability
+-  class cap_cc_t  extends Bundle{
+-    val revnode_id   = cap_revnode_id_t// 31 bits
+-    val meta         = new cap_metadata_t()// 6 bits
+-    val bounds       = new cap_cc_bounds_t()// 27 + 64 = 91 bits
+-   }
+-
+- 
+- ////////////////////////////////////////////////////////////////////////////////////////////
+  object cap_format{
+   def  CAP_ASYNC_SYNC   = "b00".U
+   def  CAP_ASYNC_EXC    = "b01".U
+@@ -139,343 +116,27 @@ package object xiangshan {
+  }   
+ 
+   //mlabaf//capstone 
+-  object cap_bound{
+-    def  v_b_u  = "b0".U//valid_upper
+-    def  v_b_d  = "b0".U//valid_down 
+-    def  t_b_u  = "b11".U//type
+-    def  t_b_d  = "b011".U//type
+-    def  c_b_u  = 4+64-1//cursor
+-    def  c_b_d  = "b100".U//cursor 
+-    def  b_b_u  = 4+2*64-1//base
+-    def  b_b_d  = 4+64//base
+-    def  e_b_u  = 4+3*64-1//end
+-    def  e_b_d  = 4+2*64//end
+-    def  p_b_u  = 4+3*64+2//perm
+-    def  p_b_d  = 4+3*64//perm 
+-    def  a_b_u  = 4+3*64+3//async
+-    def  a_b_d  = 4+3*64+3//async
+-    def  r_b_u  = 4+3*64+7//reg                           
+-    def  r_b_d  = 4+3*64+3//reg                           
+-    }
++  // object cap_bound{
++  //   def  v_b_u  = "b0".U//valid_upper
++  //   def  v_b_d  = "b0".U//valid_down 
++  //   def  t_b_u  = "b11".U//type
++  //   def  t_b_d  = "b011".U//type
++  //   def  c_b_u  = 4+64-1//cursor
++  //   def  c_b_d  = "b100".U//cursor 
++  //   def  b_b_u  = 4+2*64-1//base
++  //   def  b_b_d  = 4+64//base
++  //   def  e_b_u  = 4+3*64-1//end
++  //   def  e_b_d  = 4+2*64//end
++  //   def  p_b_u  = 4+3*64+2//perm
++  //   def  p_b_d  = 4+3*64//perm 
++  //   def  a_b_u  = 4+3*64+3//async
++  //   def  a_b_d  = 4+3*64+3//async
++  //   def  r_b_u  = 4+3*64+7//reg                           
++  //   def  r_b_d  = 4+3*64+3//reg                           
++  //   }
+     
+-  // pack the cap and tag bits to bounce around the different stages
+-  // the valid bit is used as sort of a write enable
+-// class  cap_result_t extends Bundle{
+-class  fu_data_t extends Bundle{
+-    val operand_a = UInt (XLEN.W)
+-    val operand_b = UInt (XLEN.W)
+-    val imm       = UInt (XLEN.W)
+-    val cap_a     = clen_t
+-    val cap_b     = clen_t
+-    val cap_c     = clen_t
+-    val tag_a     = UInt (1.W)
+-    val tag_b     = UInt (1.W)
+-    val tag_c     = UInt (1.W)
+-    val valid     = UInt (1.W) 
+-    val rd        = UInt (5.W)
+-    val rs1       = UInt (5.W)
+-    val rs2       = UInt (5.W)
+-
+-   }
+-class  cap_result_t extends Bundle{
+-    val cap  = clen_t
+-    val tag   = UInt (1.W)
+-    val valid   = UInt (1.W)
+-   }
+-
+-
+-// Utilty functions for querying and manipulating the capabilities
+-// converts a compressed bounds into a fat bounds
+-//class cap_bounds_uncompres extends Bundle {
+-class cap_bounds_uncompres extends Module {
+- // val io = IO(new Bundle() {})
+-  //val cap_cc_bounds  =Input ( Module(new cap_cc_bounds_t()))
+- // val cap_fat_bounds =Output ( Module(new cap_fat_bounds_t()))  
+- // val cap_cc_bounds  =Module(new cap_cc_bounds_t)
+-//  val cap_fat_bounds =Module(new cap_fat_bounds_t)
+-  val cap_cc_bounds  =IO(Input(new cap_cc_bounds_t))
+-  val cap_fat_bounds =IO(Output(new cap_fat_bounds_t))
+- //}
+- //)
+-  //var E = Vec (6, Bool())
+-  //val E =VecInit.fill(6)(false.B)
+-  val E =UInt(6.W)
+-  val B = UInt(14.W)
+-  val T = UInt(14.W)
+-  val carry_out = UInt(1.W)
+-  val msb  =  UInt(1.W)//Bool()
+-  val bb, tt =   UInt(XLEN.W)
+-  val A3, B3, T3, R  =  UInt(3.W)
+-
+-  for (i <- 0 until 10)
+-    B(i+3) := (cap_cc_bounds.b(i))
+-
+-  for (i <- 0 until 8)
+-    B(i+3) := (cap_cc_bounds.t(i))
+-
+-//  B(13,3) := Bool(cap_cc_bounds.b(10,0))
+-//  T(11,3) := Bool(cap_cc_bounds.t(8,0))
+-//  if (cap_cc_bounds.iE===0.U )
+-  if (cap_cc_bounds.iE==false.B )
+-  {
+-    msb := false.B
+-    for (i <- 0 until 5)
+-      E(i) := (false.B)
+-
+-  //  E = VecInitFill(6)(false.B)
+-  //  T(2,0) = cap_cc_bounds.tE
+-  //  B(2,0) = cap_cc_bounds.bE
+-
+-    for (i <- 0 until 2)
+-    {
+-      T(i) := cap_cc_bounds.tE(i)
+-      B(i) := cap_cc_bounds.bE(i)
+-    }
+-   // if (T(11,0) < B(11,0))
+-   //  carry_out := true.B
+-   // else 
+-   //   carry_out := false.B
+-   carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
+-   //Cat(Fill(32, func(0)), Fill(32, 1.U)) & src1
+-  }    
+-  else
+-  {
+-    for (i <- 0 until 2)
+-    {
+-      T(i) := cap_cc_bounds.tE(i)
+-      B(i) := cap_cc_bounds.bE(i)
+-    }
+-    for (i <- 0 until 2)
+-    {
+-     E(i)   := cap_cc_bounds.tE(i)
+-     E(i+3) := cap_cc_bounds.bE(i)
+-    }
+-        
+- //  E := (cap_cc_bounds.tE, cap_cc_bounds.bE)
+-   for (i <- 0 until 2)
+-    {
+-      T(i) := false.B
+-      B(i) := false.B
+-    }
+-  // if (T(11,0) < B(11,0))
+-   //if (T< B)
+-    // carry_out := true.B
+-   //else 
+-     //carry_out := false.B
+-
+-   carry_out := Mux(T(11,0) < B(11,0), true.B, false.B)
+- //  carry_out = T(11,3) < B(11,3)
+-    msb := true.B
+- }
+-   
+-//   T(13,12) := B(13,12) + ("b0".U, carry_out) + ("b0".U, msb)
+-   T(13,12) := B(13,12) + Cat(0.U(1.W), carry_out) + Cat(0.U(1.W), msb)
+-
+-    bb := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), B(13,0)) << E
+-    tt := Cat((cap_cc_bounds.cursor >> (E + 14.U(6.W))), T(13,0)) << E
+-
+-  //  bb := cap_cc_bounds.cursor >> 14.U//, B(13,0)) << E
+- // val bitShift = B(5, 0) << 1.U
+- // val bitShift2 = cap_cc_bounds.cursor >> 1.U
+-
+-  // correction
+-   A3 := (cap_cc_bounds.cursor >> (E + 11.U(6.W)))(2,0)
+-   
+-  // B3 = B(13,11)
+-  // T3 = T(13,11)
+-   for (i <- 0 until 2)
+-    {
+-      B3(i) := B(i+11)
+-      T3(i) := T(i+11)
+-    }   
+-   R := B3 - 1.U(3.W)
+-
+-  // $display("Before correction: b = %0x, t = %0x", b, t);
+-  tt := Mux((A3 >= R) && (T3 < R), tt + 1.U(6.W) << (E + 14.U(6.W)), Mux((A3 < R && T3 >= R), tt - 1.U(6.W) << (E + 14.U(6.W)), false.B))    
+-  //if((A3 >= R) && (T3 < R))
+-  //  tt :=tt + 1.U(6.W) << (E + 14.U(6.W))
+-  //else if(A3 < R && T3 >= R)
+-  //  tt :=tt - 1.U(6.W) << (E + 14.U(6.W))
+-     
+-  bb := Mux((A3 >= R) && (B3 < R), bb + 1.U(6.W) << (E + 14.U(6.W)), Mux(((A3 < R) && (B3 >= R)), bb - 1.U(6.W)<< (E + 14.U(6.W)), false.B))    
+-  //if((A3 >= R) && (B3 < R))
+-  //  bb :=bb + 1.U(6.W) << (E + 14.U(6.W))
+-  //else if((A3 < R) && (B3 >= R))
+-  // bb :=bb - 1.U(6.W)<< (E + 14.U(6.W))
+-
+-  cap_fat_bounds.cursor:= cap_cc_bounds.cursor
+- // cap_fat_bounds.base:= b
+- // cap_fat_bounds.top:= t    
+-}
+-
+-
+-// converts a fat bounds into a compressed bounds
+-class cap_bounds_compress extends Module {
+-//  val io = IO(new Bundle() {
+-//  val cap_cc_bounds  =Output (Module(new cap_cc_bounds_t()))
+-//  val cap_fat_bounds =Input  (Module(new cap_fat_bounds_t()))
+-// })
+-  val cap_cc_bounds  =IO(Output(new cap_cc_bounds_t()))
+-  val cap_fat_bounds =IO(Input(new cap_fat_bounds_t()))
+-
+-  val leading_zeros = 63.U(6.W)//UInt(6.W)// 0.U//"b000000".U(6.W)//VecInit.fill(6)(true.B)// //VecInit.fill(6)(true.B) //Vec(6, Bool())
+-  val E  = UInt(6.W) //Vec(6, Bool())
+-  val iE = UInt(1.W) //Bool()// 63
+-  val B  = UInt(14.W) //  Vec(14, Bool())
+-  val T  = UInt(12.W) //Vec(12, Bool())
+-  val len = cap_fat_bounds.top - cap_fat_bounds.base
+- 
+-
+-  val test5=(leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))
+-  
+-  // $display("leading_zeros = %0x", leading_zeros);
+- // while(((leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))) === 0.U(XLEN.W)) 
+-  while(test5== 0.U(XLEN.W))
+-  {
+-  // leading_zeros := Mux (test5<1.U(6.W), leading_zeros - 1.U(6.W) ,0.U )
+-   E := leading_zeros - 12.U(6.W);
+-   test5:=(leading_zeros > 12.U(6.W)) & ((len >> leading_zeros) & 1.U(XLEN.W))
+-
+-  // $display("E = %0x", E);
+-  }
+-  if(E ==0.U(6.W))
+-   if(len(12) == 0.U(1.W)) 
+-   {
+-    iE := 0.U
+-    B := cap_fat_bounds.base(13,0)
+-    T := cap_fat_bounds.top(11,0)
+-   }     
+-  else 
+-  {
+-    iE := 1.U(1.W)
+-    B(13,3) := (cap_fat_bounds.base >> E)(13,3)
+-    T(11,3) := (cap_fat_bounds.top >> E)(11,3)
+-    // $display("B = %0x, T = %0x", B, T);
+-    if(((cap_fat_bounds.top >> (E + 3.U)) << (E + 3.U)) != cap_fat_bounds.top)
+-      T(11,3) :=T(11,3) + 1.U(9.W)
+-      // TODO: more corrections
+-      // $display("B = %0x, T = %0x", B, T);
+-      B(2,0) := E(2,0)
+-      T(2,0) := E(5,3)
+-  }
+-  cap_cc_bounds.cursor:= cap_fat_bounds.cursor
+-  cap_cc_bounds.bE:= B(2,0)
+-  cap_cc_bounds.b:= B(13,3)
+-  cap_cc_bounds.tE:= T(2,0)
+-  cap_cc_bounds.t:= T(11,3)
+-  cap_cc_bounds.iE:= iE
+-}
+-
+-// converts a compressed cap into a fat cap
+-class cap_uncompress extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_fat =Output cap_fat_t()
+- // val cap_cc  =Input cap_cc_t()
+-// })
+-  val cap_fat =IO(Output(new cap_fat_t()))
+-  val cap_cc  =IO(Input(new cap_cc_t()))
+-
+-  val  cap_uncompress_cap =Module( new cap_bounds_uncompres)
+-
+-if ((cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALED )||(cap_cc.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+-{ 
+-  cap_fat.bounds.cursor:= 0.U
+-  cap_fat.bounds.base:= cap_cc.bounds.cursor
+-  cap_fat.bounds.top:= 0.U
+-  cap_fat.reg_id:= cap_cc.bounds.b(5,1)
+-  cap_fat.async:= cap_cc.bounds.b(0)
+-  cap_fat.padding:= 0.U
+-  cap_fat.meta:= cap_cc.meta
+-  cap_fat.revnode_id:= cap_cc.revnode_id
+- }
+- else
+- {  cap_uncompress_cap.cap_cc_bounds :=cap_cc.bounds
+-    cap_fat.bounds:= cap_uncompress_cap.cap_fat_bounds 
+-    cap_fat.reg_id:= 0.U
+-    cap_fat.async:= 1.U
+-    cap_fat.padding:= 0.U
+-    cap_fat.revnode_id:= cap_cc.revnode_id
+-    cap_fat.meta:= cap_cc.meta
+-  }
+-}
+-
+-class cap_cc_set_async_reg_id extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_cc  = Input new cap_cc_t()
+- // val async   = Input(UInt(1.W))//Bool()
+- // val reg_id  = Input(UInt(5.W))//Vec(5, Bool())
+- // val cap_cc_n= Output new cap_cc_t() 
+-//  })
+-  val cap_cc  =  IO(Input (new cap_cc_t()))
+-  val async   =  IO(Input(0.U(1.W)))//Bool()
+-  val reg_id  =  IO(Input(0.U(5.W)))//Vec(5, Bool())
+-  val cap_cc_n= IO(Output(new cap_cc_t()))
+-
+-    cap_cc_n := cap_cc;
+-    cap_cc_n.bounds.b(5,1) := reg_id
+-    cap_cc_n.bounds.b(0) := async
+-    
+-  }
+-
+-class cap_cc_get_async  extends Module {
+-//  val io = IO(new Bundle() {
+-  //val cap_cc =Input cap_cc_t()
+-// val Outputt =Output(0.U(1.W))//Bool())
+-//})  
+-  val cap_cc =IO(Input(new cap_cc_t()))
+-  val Outputt=IO(Output(0.U(1.W)))//(Bool())
+-
+-   Outputt := cap_cc.bounds.b(0)
+-}
+-
+-class cap_cc_is_cap extends Module {
+-//  val io = IO(new Bundle() {
+-  //val cap_cc =Input new cap_cc_t()
+-//  val out    =Output(UInt(1.W))//Bool())
+- //})
+-  val cap_cc =IO(Input(new cap_cc_t()))
+-  val out    =IO(Output(0.U(1.W)))//Bool()
+-  
+-    out:= cap_cc; // FIXME: temporary hack//??
+-  }
+-
+-// converts a fat cap into a compressed cap
+- class cap_compress extends Module {
+- // val io = IO(new Bundle() {
+- // val cap_fat =Input new cap_fat_t()
+- // val cap_cc  =Output new cap_cc_t()
+- //})
+-
+-  val cap_fat =IO(Input(new cap_fat_t()))
+-  val cap_cc  =IO(Output(new cap_cc_t()))
+-
+-  val cap_compress_cap = Module( new cap_bounds_compress)
+-  val bounds_cc =  (new cap_cc_bounds_t)
+-
+-
+-  if ((cap_fat.meta.ty == cap_type_t.CAP_TYPE_SEALED) || (cap_fat.meta.ty == cap_type_t.CAP_TYPE_SEALEDRET)) 
+-  {
+-  // we don't need to store full bounds. Instead, we reuse the bits
+-  // for async and reg
+-   //bounds_cc := 0.U
+-   bounds_cc.cursor := cap_fat.bounds.base
+-   bounds_cc.b(0) := cap_fat.async
+-   bounds_cc.b(5,1) := cap_fat.reg_id
+-
+-   cap_cc.bounds:= 0.U
+-   cap_cc.meta:= cap_fat.meta
+-   cap_cc.revnode_id:= cap_fat.revnode_id
+-  }
+-  else 
+-   {
+-     cap_compress_cap.cap_fat_bounds :=cap_fat.bounds
+-     cap_cc.bounds:= cap_compress_cap.cap_cc_bounds 
+-    //  cap_cc.bounds.bounds:=cap_bounds_compress(cap_fat.bounds)
+-     cap_cc.revnode_id:= cap_fat.revnode_id
+-     cap_cc.meta:= cap_fat.meta
+-   }
+-  }
+ 
++////////////////////////////////////////////////////////////apstone object end////////////////////////////////////////
+ 
+ 
+   object SrcType {
+-- 
+2.34.1
+

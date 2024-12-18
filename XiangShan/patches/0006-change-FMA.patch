@@ -1,0 +1,37 @@
+From a959798a5bf91c9d0402b27f15164ed0256c622b Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Mon, 29 Jul 2024 14:46:22 +0800
+Subject: [PATCH 06/16] change FMA
+
+---
+ src/main/scala/xiangshan/backend/fu/fpu/FMA.scala | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+index 37afa79a7..d76a970ac 100644
+--- a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
++++ b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+@@ -191,6 +191,20 @@ class FMA(implicit p: Parameters) extends FPUSubModule {
+   val mul_pipe = Module(new FMUL_pipe())
+   val add_pipe = Module(new FADD_pipe())
+ 
++  //mlabaf//capstone
++  add_pipe.io.in.bits.operand_a := 0.U
++  add_pipe.io.in.bits.operand_b := 0.U
++  add_pipe.io.in.bits.imm       := 0.U
++  add_pipe.io.in.bits.cap_a     := 0.U
++  add_pipe.io.in.bits.cap_b     := 0.U
++  add_pipe.io.in.bits.cap_c     := 0.U
++  add_pipe.io.in.bits.tag_a     := 0.U
++  add_pipe.io.in.bits.tag_b     := 0.U
++  add_pipe.io.in.bits.tag_c     := 0.U
++  add_pipe.io.in.bits.valid     := 0.U 
++  add_pipe.io.in.bits.rd        := 0.U
++  add_pipe.io.in.bits.rs1       := 0.U
++  add_pipe.io.in.bits.rs2       := 0.U
+ 
+   mul_pipe.io.redirectIn := io.redirectIn
+   mul_pipe.rm := rm
+-- 
+2.34.1
+

@@ -1,0 +1,132 @@
+From 17f9b536888bec65dba0b32c8319557a684fbb9b Mon Sep 17 00:00:00 2001
+From: mlabaf <mlabaf@gmail.com>
+Date: Fri, 28 Jun 2024 12:10:03 +0800
+Subject: [PATCH 04/16] 4 change in instructions.scala in rocketchip
+
+---
+ .../xiangshan/backend/decode/DecodeUnit.scala | 43 +++++++++----------
+ .../xiangshan/mem/lsqueue/LoadQueue.scala     |  1 +
+ src/main/scala/xiangshan/package.scala        | 22 ++++++++++
+ 3 files changed, 44 insertions(+), 22 deletions(-)
+
+diff --git a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+index 5cef7df9c..8131667c9 100644
+--- a/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
++++ b/src/main/scala/xiangshan/backend/decode/DecodeUnit.scala
+@@ -73,39 +73,38 @@ trait DecodeUnitConstants
+ //Mlabaf Capstone instruction
+ object CapstonDecode extends DecodeConstants {
+   val table: Array[(BitPat, List[BitPat])] = Array(
+-    CLD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.cld,  Y, N, N, N, N, N, SelImm.x),
+-    CSD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.csd,  N, N, N, N, N, N, SelImm.x),
+-
+-    CREVOKE   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.crevoke, Y, N, N, N, N, N, SelImm.x),
+-    CSHRINK  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cshrink, Y, N, N, N, N, N, SelImm.x),
+-    CTIGHT -> List(SrcType.imm, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.ctighten, Y, N, N, N, N, N, SelImm.x),
+-    CDELIN -> List(SrcType.imm, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cdelin, Y, N, N, N, N, N, SelImm.x),
+-    CLCC    -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.clcc, Y, N, N, N, N, N, SelImm.x),
+-    CSCC    -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cscc, Y, N, N, N, N, N, SelImm.x),
+-    CSPLIT  -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.csplit, Y, N, N, N, N, N, SelImm.x),
+-    CSEAL   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cseal, Y, N, N, N, N, N, SelImm.X),
+-    CMREV   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cmrev, Y, N, N, N, N, N, SelImm.X),
+-    CINIT   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cinit, Y, N, N, N, N, N, SelImm.X),
+-    CMOVC   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cmovc, Y, N, N, N, N, N, SelImm.X),
+-    CDROP   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cdrop, Y, N, N, N, N, N, SelImm.X),
++    CREVOKE       -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.crevoke, Y, N, N, N, N, N, SelImm.X),
++    CSHRINK       -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cshrink, Y, N, N, N, N, N, SelImm.X),
++    CTIGHT        -> List(SrcType.imm, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.ctighten, Y, N, N, N, N, N, SelImm.X),
++    CDELIN        -> List(SrcType.imm, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cdelin, Y, N, N, N, N, N, SelImm.X),
++    CLCC          -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.clcc, Y, N, N, N, N, N, SelImm.X),
++    CSCC          -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cscc, Y, N, N, N, N, N, SelImm.X),
++    CSPLIT        -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.csplit, Y, N, N, N, N, N, SelImm.X),
++    CSEAL         -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cseal, Y, N, N, N, N, N, SelImm.X),
++    CMREV         -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cmrev, Y, N, N, N, N, N, SelImm.X),
++    CINIT         -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cinit, Y, N, N, N, N, N, SelImm.X),
++    CMOVC         -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cmovc, Y, N, N, N, N, N, SelImm.X),
++    CDROP         -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cdrop, Y, N, N, N, N, N, SelImm.X),
+     CCINCOFFSET   -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccincoffset, Y, N, N, N, N, N, SelImm.X),
+ 
+     CCALL     -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccall, N, N, N, N, N, N, SelImm.X),
+-    CRETURN   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.creturn, N, N, N, N, N, N, SelImm.x),
++    CRETURN   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.creturn, N, N, N, N, N, N, SelImm.X),
+     CJALR     -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccjalr, N, N, N, N, N, N, SelImm.X),
+-    CCBNZ     -> List(SrcType.reg,q SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccbnz, N, N, N, N, N, N, SelImm.X),
+-    CCCSRRW   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cccsrrw, N, N, N, N, N, N, SelImm.x),
++    CCBNZ     -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccbnz, N, N, N, N, N, N, SelImm.X),
++    CCCSRRW   -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.alu, CapstoneType.cccsrrw, N, N, N, N, N, N, SelImm.X),
+     CCAPENTER -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccapenter, N, N, N, N, N, N, SelImm.X),
+     CCINCOFFSETIM  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.ccincoffsetimm, N, N, N, N, N, N, SelImm.X),
+-    CSHRINHTO  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cshrinkto, N, N, N, N, N, N, SelImm.X),
+-    
++    CSHRINHTO  -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, CapstoneType.cshrinkto, N, N, N, N, N, N, SelImm.X)
++   
+   )
+-}
++} 
+ /**
+  * Decode constants for RV64
+  */
+ object X64Decode extends DecodeConstants {
+   val table: Array[(BitPat, List[BitPat])] = Array(
++    CLD     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.cld,  Y, N, N, N, N, N, SelImm.IMM_I),
++    CSD     -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.csd,  N, N, N, N, N, N, SelImm.IMM_I),
+     LD      -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.ld,  Y, N, N, N, N, N, SelImm.IMM_I),
+     LWU     -> List(SrcType.reg, SrcType.imm, SrcType.X, FuType.ldu, LSUOpType.lwu, Y, N, N, N, N, N, SelImm.IMM_I),
+     SD      -> List(SrcType.reg, SrcType.reg, SrcType.X, FuType.stu, LSUOpType.sd,  N, N, N, N, N, N, SelImm.IMM_S),
+@@ -619,7 +618,7 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
+     XSTrapDecode.table ++
+     BDecode.table ++
+     CBODecode.table ++
+-    CapstonDecode++
++    CapstonDecode.table++
+     SvinvalDecode.table
+   // assertion for LUI: only LUI should be assigned `selImm === SelImm.IMM_U && fuType === FuType.alu`
+   val luiMatch = (t: Seq[BitPat]) => t(3).value == FuType.alu.litValue && t.reverse.head.value == SelImm.IMM_U.litValue
+diff --git a/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala b/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
+index e97127f03..d19590b24 100644
+--- a/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
++++ b/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
+@@ -57,6 +57,7 @@ trait HasLoadHelper { this: XSModule =>
+       LSUOpType.lbu  -> ZeroExt(rdata(7, 0) , XLEN),
+       LSUOpType.lhu  -> ZeroExt(rdata(15, 0), XLEN),
+       LSUOpType.lwu  -> ZeroExt(rdata(31, 0), XLEN),
++      LSUOpType.cld  -> ZeroExt(rdata(31, 0), XLEN),//Mlabaf//capstone
+     ))
+   }
+ }
+diff --git a/src/main/scala/xiangshan/package.scala b/src/main/scala/xiangshan/package.scala
+index 426c9d8ba..4e7da89aa 100644
+--- a/src/main/scala/xiangshan/package.scala
++++ b/src/main/scala/xiangshan/package.scala
+@@ -248,6 +248,28 @@ package object xiangshan {
+ 
+   object ALUOpType {
+     // shift optype
++    def crevoke     = "b000_000".U
++    def cshrink     = "b000_001".U
++    def ctighten    = "b000_010".U
++    def cdelin      = "b000_011".U
++    def clcc        = "b000_100".U
++    def cscc        = "b000_101".U
++    def csplit      = "b000_110".U
++    def cseal       = "b000_111".U
++    def cmrev       = "b001_000".U
++    def cinit       = "b001_001".U
++    def cmovc       = "b001_010".U
++    def cdrop       = "b001_011".U
++    def ccincoffset = "b001_100".U
++    def ccall       = "b001_101".U
++    def creturn     = "b001_110".U
++    def ccjalr      = "b001_111".U 
++    def ccbnz       = "b010_000".U
++    def cccsrrw     = "b010_001".U
++    def ccapenter   = "b010_010".U
++    def ccincoffsetimm = "b010_011".U
++    def cshrinkto = "b010_011".U
++    
+     def slliuw     = "b000_0000".U // slliuw: ZEXT(src1[31:0]) << shamt
+     def sll        = "b000_0001".U // sll:     src1 << src2
+ 
+-- 
+2.34.1
+
